@@ -1,14 +1,15 @@
 # OrionQueue — Distributed GPU Workload Orchestrator
 
-> **Status: Phase 4 (worker registration & heartbeats) complete.** Jobs can be
-> submitted, looked up, listed, cancelled, and retried through both REST and
-> real gRPC, backed by PostgreSQL. The Python worker agent now registers with
-> the control plane, reports simulated GPU inventory, and heartbeats on an
-> etcd-backed lease — verified live: a real worker registered with 2
-> simulated GPUs, that inventory showed up over REST, and killing the worker
-> got it marked `LOST` automatically about 10 seconds later with no polling
-> script involved. There is no scheduler or job execution wired in yet. See
-> [PROJECT_STATUS.md](PROJECT_STATUS.md) for the live phase tracker and
+> **Status: Phase 5 (scheduler) complete.** Submitted jobs are now actually
+> scheduled: a real scheduling loop picks up QUEUED jobs, checks GPU/CPU/memory
+> eligibility against real worker capacity, and assigns them — verified live,
+> a submitted job went from QUEUED to SCHEDULED with the correct worker ID in
+> under 5 seconds, with a matching row in `scheduling_decisions`. Leader
+> election over etcd means only one scheduler replica is ever active, proven
+> against real etcd (mutual exclusion and automatic failover). There is no
+> job *execution* wired in yet — a SCHEDULED job doesn't yet run anywhere;
+> that's Phase 6. See [PROJECT_STATUS.md](PROJECT_STATUS.md) for the live
+> phase tracker and
 > [docs/architecture/system-overview.md](docs/architecture/system-overview.md)
 > for the full design.
 
@@ -35,9 +36,11 @@ modes relate.
 
 ## Architecture at a glance
 
-- **Control plane (Go):** gRPC services + REST gateway, PostgreSQL for durable
-  state, etcd for worker liveness leases (and, from Phase 5, scheduler leader
-  election), Prometheus metrics, structured JSON logs.
+- **Control plane (Go):** gRPC services + REST gateway, a scheduling loop
+  (priority + fairness, GPU/CPU/memory eligibility, gang scheduling, bin
+  packing) with etcd-backed leader election, PostgreSQL for durable state,
+  etcd for both worker liveness leases and scheduler leadership, Prometheus
+  metrics, structured JSON logs.
 - **Worker plane (Python):** gRPC client agent, GPU discovery (deterministic
   fake-GPU mode today; NVML for real hardware from Phase 9), registration and
   heartbeats against the control plane, checkpoint read/write (Phase 8).
@@ -71,10 +74,10 @@ Requires Go 1.27+, Python 3.11+, Node 20+, and Docker.
 ```bash
 docker compose up --build
 # postgres:  durable job/worker state (Postgres healthcheck gates everything below)
-# etcd:      worker liveness leases (RegisterWorker/WorkerHeartbeat) — see ADR-0001
-# migrate:   applies migrations/*.sql once, then exits — api waits for this
+# etcd:      worker liveness leases + scheduler leader election — see ADR-0001
+# migrate:   applies migrations/*.sql once, then exits — api/scheduler wait for this
 # api:       http://localhost:7080 (REST + health), :9080 (gRPC, reflection on)
-# scheduler: http://localhost:7081/healthz, /readyz
+# scheduler: http://localhost:7081/healthz, /readyz, /leader (is this replica leading?)
 # frontend:  http://localhost:8088
 # worker:    registers with api and heartbeats — see its logs, no HTTP endpoint
 
@@ -119,6 +122,28 @@ lease expires without a renewing heartbeat (default: ~20s after the last
 heartbeat, no polling or external script required). Restart it with
 `docker compose start worker` to see it register again as a new worker.
 
+**Watch a job actually get scheduled:** with a worker registered, submit a
+job that fits its capacity and poll it — within one scheduling pass (default
+5s) it moves from `JOB_STATE_QUEUED` to `JOB_STATE_SCHEDULED` with
+`assigned_worker_ids` set to a real, eligible worker:
+
+```bash
+curl -X POST http://localhost:7080/api/v1/jobs -d '{
+  "name": "fits", "owner": "you", "image": "img",
+  "resources": {"gpu_count": 1, "cpu_cores": 1}, "priority": 50
+}'
+sleep 6
+curl http://localhost:7080/api/v1/jobs/<id>   # state: JOB_STATE_SCHEDULED, assigned_worker_ids: [...]
+```
+
+A job requesting more GPUs than any current worker has stays
+`JOB_STATE_QUEUED` indefinitely rather than being force-failed — a
+larger worker could register later and make it schedulable (see
+[ADR-0002](docs/adr/0002-scheduler-design.md)). Every successful
+assignment is also recorded in the `scheduling_decisions` table.
+`assigned_worker_ids` being set doesn't mean the job is *running* yet —
+nothing executes it until Phase 6.
+
 **Or call the real gRPC service directly**, e.g. with
 [grpcurl](https://github.com/fullstorydev/grpcurl) (server reflection is on,
 so no local `.proto` files are needed):
@@ -131,9 +156,10 @@ grpcurl -plaintext -d '{"name":"j1","owner":"you","image":"img"}' 127.0.0.1:9080
 OpenAPI/Swagger definitions generated from the same protobuf source are at
 `docs/api/orionqueue/v1/*.swagger.json`.
 
-**Or run each service directly, without Docker.** `cmd/api` needs a running
-Postgres (migrations applied) and etcd — the easiest way is
-`docker compose up -d postgres migrate etcd`, then run the rest natively:
+**Or run each service directly, without Docker.** Both `cmd/api` and
+`cmd/scheduler` need a running Postgres (migrations applied) and etcd — the
+easiest way is `docker compose up -d postgres migrate etcd`, then run the
+rest natively:
 
 ```bash
 docker compose up -d postgres migrate etcd   # or: your own Postgres + etcd + ./scripts/migrate.sh
@@ -148,7 +174,7 @@ docker compose up -d postgres migrate etcd   # or: your own Postgres + etcd + ./
 export ORIONQUEUE_DATABASE_URL="postgres://orionqueue:orionqueue@localhost:5433/orionqueue?sslmode=disable"
 
 ./scripts/dev-api.sh         # http://localhost:7080
-./scripts/dev-scheduler.sh   # http://localhost:7081
+./scripts/dev-scheduler.sh   # http://localhost:7081 — campaigns for leadership, then schedules every 5s while leading
 ./scripts/dev-worker.sh      # creates worker/.venv on first run; registers against ORIONQUEUE_API_GRPC_ADDR (default localhost:9080)
 ./scripts/dev-frontend.sh    # installs node_modules on first run, then Vite dev server
 ```
@@ -173,15 +199,17 @@ the Makefile is a thin wrapper.)
 Or `make fmt` / `make lint` / `make test` / `make test-integration` / `make build`
 / `make migrate`. See `PROJECT_STATUS.md` for the latest run's actual test
 counts and coverage. End-to-end and load test suites are added in later
-phases as the functionality they'd exercise (scheduling, checkpointing) gets
-built. What exists today already goes beyond bare unit tests:
-`internal/api` includes real HTTP round-trips through the REST gateway, and
-`tests/integration` runs `JobRepository`/`WorkerRepository` against a real,
-disposable PostgreSQL container and `leases.EtcdManager` against a real,
-disposable etcd container (both via testcontainers-go) — including tests
-that open a second, independent connection to prove state survives what a
-restart would do, and one that waits out a real etcd lease TTL to prove
-automatic worker-loss detection against real infrastructure, not a fake.
+phases as the functionality they'd exercise (checkpointing, real execution
+under load) gets built. What exists today already goes beyond bare unit
+tests: `internal/api` includes real HTTP round-trips through the REST
+gateway; `internal/scheduler` includes a test that runs two scheduler
+instances concurrently against the same in-memory job to prove they can't
+double-assign it; and `tests/integration` runs `JobRepository`/
+`WorkerRepository`/scheduling-decision persistence against a real,
+disposable PostgreSQL container and both `leases.EtcdManager` and
+`leases.RunElection` (leader election, including mutual exclusion and
+failover between two candidates) against a real, disposable etcd container
+— all via testcontainers-go, none of it mocked.
 
 ## Limitations
 

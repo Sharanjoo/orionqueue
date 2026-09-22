@@ -42,6 +42,15 @@ RETURNING %s`, jobColumnList, jobColumnList)
 
 	selectJobByIDForUpdateSQL = fmt.Sprintf(`SELECT %s FROM jobs WHERE id = $1 FOR UPDATE`, jobColumnList)
 
+	// selectActiveJobsSQL mirrors jobs.State.Terminal(): everything except
+	// SUCCEEDED, FAILED, and CANCELLED. Ordered by (priority DESC,
+	// created_at ASC) — the order internal/scheduler needs directly, no
+	// further sorting required on the Go side.
+	selectActiveJobsSQL = fmt.Sprintf(`
+SELECT %s FROM jobs
+WHERE state NOT IN ('SUCCEEDED', 'FAILED', 'CANCELLED')
+ORDER BY priority DESC, created_at ASC, id ASC`, jobColumnList)
+
 	// updateJobSQL intentionally never touches submission_id — it's
 	// immutable after creation, so it isn't in the SET list even though
 	// it's part of jobColumnList for reads.
@@ -236,6 +245,27 @@ func (r *JobRepository) Update(ctx context.Context, id string, fn func(jobs.Job)
 		return jobs.Job{}, fmt.Errorf("persistence: commit update: %w", err)
 	}
 	return stored, nil
+}
+
+func (r *JobRepository) ListActive(ctx context.Context) ([]jobs.Job, error) {
+	rows, err := r.pool.Query(ctx, selectActiveJobsSQL)
+	if err != nil {
+		return nil, fmt.Errorf("persistence: list active jobs: %w", err)
+	}
+	defer rows.Close()
+
+	var active []jobs.Job
+	for rows.Next() {
+		job, err := scanJob(rows)
+		if err != nil {
+			return nil, fmt.Errorf("persistence: scan active job: %w", err)
+		}
+		active = append(active, job)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("persistence: iterate active jobs: %w", err)
+	}
+	return active, nil
 }
 
 func insertJobEvent(ctx context.Context, tx pgx.Tx, jobID, eventType string, fromState *string, toState, detail string) error {

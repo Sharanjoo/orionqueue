@@ -34,6 +34,9 @@ RETURNING %s`, workerColumnList)
 
 	selectWorkerByIDSQL = fmt.Sprintf(`SELECT %s FROM workers WHERE id = $1`, workerColumnList)
 
+	selectActiveWorkersSQL = fmt.Sprintf(`
+SELECT %s FROM workers WHERE status = 'ACTIVE' ORDER BY registered_at, id`, workerColumnList)
+
 	selectWorkerByIDForUpdateSQL = fmt.Sprintf(`SELECT %s FROM workers WHERE id = $1 FOR UPDATE`, workerColumnList)
 
 	updateWorkerSQL = fmt.Sprintf(`
@@ -223,6 +226,37 @@ func (r *WorkerRepository) Update(ctx context.Context, id string, fn func(worker
 		return workers.Worker{}, fmt.Errorf("persistence: commit update: %w", err)
 	}
 	return stored, nil
+}
+
+func (r *WorkerRepository) ListActive(ctx context.Context) ([]workers.Worker, error) {
+	rows, err := r.pool.Query(ctx, selectActiveWorkersSQL)
+	if err != nil {
+		return nil, fmt.Errorf("persistence: list active workers: %w", err)
+	}
+	defer rows.Close()
+
+	var active []workers.Worker
+	for rows.Next() {
+		w, err := scanWorker(rows)
+		if err != nil {
+			return nil, fmt.Errorf("persistence: scan active worker: %w", err)
+		}
+		active = append(active, w)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("persistence: iterate active workers: %w", err)
+	}
+
+	// N+1: one GPU query per active worker — same documented simplification
+	// as List (see its comment above).
+	for i := range active {
+		gpus, err := getGPUs(ctx, r.pool, active[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		active[i].GPUs = gpus
+	}
+	return active, nil
 }
 
 func getGPUs(ctx context.Context, q querier, workerID string) ([]workers.GPU, error) {

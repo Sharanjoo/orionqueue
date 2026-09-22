@@ -77,7 +77,7 @@ func run() int {
 		return 1
 	}
 	defer etcdClient.Close()
-	if err := waitForEtcd(context.Background(), etcdClient); err != nil {
+	if err := leases.WaitForEtcd(context.Background(), etcdClient); err != nil {
 		logger.Error("failed to reach etcd", slog.String("error", err.Error()))
 		return 1
 	}
@@ -132,35 +132,6 @@ func run() int {
 	}
 
 	return serve(logger, grpcServer, grpcLis, httpSrv, workerSvc)
-}
-
-// waitForEtcd checks etcd connectivity with a bounded retry, the same
-// startup-ordering accommodation persistence.Connect makes for Postgres —
-// etcd inside Docker Compose can still be starting even after api's own
-// container is up.
-func waitForEtcd(ctx context.Context, client *clientv3.Client) error {
-	const (
-		maxAttempts = 10
-		baseDelay   = 300 * time.Millisecond
-	)
-	var lastErr error
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		getCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		_, lastErr = client.Get(getCtx, "orionqueue-startup-probe")
-		cancel()
-		if lastErr == nil {
-			return nil
-		}
-		if attempt == maxAttempts {
-			break
-		}
-		select {
-		case <-time.After(baseDelay * time.Duration(attempt)):
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-	return fmt.Errorf("etcd unreachable after %d attempts: %w", maxAttempts, lastErr)
 }
 
 // serve starts the gRPC and HTTP servers together, runs the worker

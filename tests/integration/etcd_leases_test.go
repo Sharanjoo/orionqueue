@@ -14,10 +14,12 @@ import (
 	"github.com/Sharanjoo/orionqueue/internal/leases"
 )
 
-// newTestEtcdManager starts a real, disposable single-node etcd container
-// (the same image docker-compose.yml uses) and returns a leases.EtcdManager
-// connected to it.
-func newTestEtcdManager(t *testing.T) *leases.EtcdManager {
+// newTestEtcdClient starts a real, disposable single-node etcd container
+// (the same image docker-compose.yml uses) and returns a connected
+// *clientv3.Client. Used directly by tests that need raw etcd primitives
+// (leader election); newTestEtcdManager wraps it for tests that only need
+// the leases.Manager interface.
+func newTestEtcdClient(t *testing.T) *clientv3.Client {
 	t.Helper()
 	ctx := context.Background()
 
@@ -45,7 +47,14 @@ func newTestEtcdManager(t *testing.T) *leases.EtcdManager {
 	}
 	t.Cleanup(func() { client.Close() })
 
-	return leases.NewEtcdManager(client)
+	return client
+}
+
+// newTestEtcdManager starts a real, disposable etcd container and returns
+// a leases.EtcdManager connected to it.
+func newTestEtcdManager(t *testing.T) *leases.EtcdManager {
+	t.Helper()
+	return leases.NewEtcdManager(newTestEtcdClient(t))
 }
 
 func TestEtcdManager_GrantAndRenew(t *testing.T) {

@@ -51,4 +51,12 @@ type Repository interface {
 	// transaction), so concurrent callers acting on the same job can't
 	// race with each other.
 	Update(ctx context.Context, id string, fn func(Job) (Job, error)) (Job, error)
+
+	// ListActive returns every job in a non-terminal state (QUEUED,
+	// SCHEDULED, RUNNING, CHECKPOINTING, RETRYING, CANCEL_REQUESTED,
+	// PREEMPTED), ordered by (Priority DESC, CreatedAt ASC) — the exact
+	// set and order internal/scheduler needs to compute cluster
+	// availability and candidate order in a single pass, unpaginated
+	// (the scheduler needs the complete picture, not a page of it).
+	ListActive(ctx context.Context) ([]Job, error)
 }

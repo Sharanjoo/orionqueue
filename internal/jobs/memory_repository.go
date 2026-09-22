@@ -127,6 +127,28 @@ func (r *MemoryRepository) Update(_ context.Context, id string, fn func(Job) (Jo
 	return updated, nil
 }
 
+func (r *MemoryRepository) ListActive(_ context.Context) ([]Job, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	active := make([]Job, 0, len(r.jobsByID))
+	for _, j := range r.jobsByID {
+		if !j.State.Terminal() {
+			active = append(active, j)
+		}
+	}
+	sort.Slice(active, func(i, k int) bool {
+		if active[i].Priority != active[k].Priority {
+			return active[i].Priority > active[k].Priority
+		}
+		if active[i].CreatedAt.Equal(active[k].CreatedAt) {
+			return active[i].ID < active[k].ID
+		}
+		return active[i].CreatedAt.Before(active[k].CreatedAt)
+	})
+	return active, nil
+}
+
 func encodePageToken(offset int) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(strconv.Itoa(offset)))
 }

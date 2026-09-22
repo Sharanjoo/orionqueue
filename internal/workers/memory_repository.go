@@ -110,6 +110,25 @@ func (r *MemoryRepository) Update(_ context.Context, id string, fn func(Worker) 
 	return updated, nil
 }
 
+func (r *MemoryRepository) ListActive(_ context.Context) ([]Worker, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	active := make([]Worker, 0, len(r.workersByID))
+	for _, w := range r.workersByID {
+		if w.Status == StatusActive {
+			active = append(active, w)
+		}
+	}
+	sort.Slice(active, func(i, k int) bool {
+		if active[i].RegisteredAt.Equal(active[k].RegisteredAt) {
+			return active[i].ID < active[k].ID
+		}
+		return active[i].RegisteredAt.Before(active[k].RegisteredAt)
+	})
+	return active, nil
+}
+
 func encodePageToken(offset int) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(strconv.Itoa(offset)))
 }

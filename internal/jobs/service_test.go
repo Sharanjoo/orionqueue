@@ -252,3 +252,134 @@ func TestServiceRetryMissingJobReturnsErrNotFound(t *testing.T) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
+
+func TestServiceAssignToWorkersTransitionsQueuedToScheduled(t *testing.T) {
+	svc, _ := newTestService()
+	job, err := svc.Submit(context.Background(), validSubmitInput())
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+
+	assigned, err := svc.AssignToWorkers(context.Background(), job.ID, []string{"worker-1", "worker-2"})
+	if err != nil {
+		t.Fatalf("AssignToWorkers returned error: %v", err)
+	}
+	if assigned.State != StateScheduled {
+		t.Errorf("State = %q, want %q", assigned.State, StateScheduled)
+	}
+	if len(assigned.AssignedWorkerIDs) != 2 || assigned.AssignedWorkerIDs[0] != "worker-1" {
+		t.Errorf("AssignedWorkerIDs = %v, want [worker-1 worker-2]", assigned.AssignedWorkerIDs)
+	}
+}
+
+func TestServiceAssignToWorkersRejectsNonQueuedJob(t *testing.T) {
+	svc, _ := newTestService()
+	job, err := svc.Submit(context.Background(), validSubmitInput())
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if _, err := svc.AssignToWorkers(context.Background(), job.ID, []string{"worker-1"}); err != nil {
+		t.Fatalf("first AssignToWorkers returned error: %v", err)
+	}
+
+	// A second assignment attempt on the now-SCHEDULED job — simulating a
+	// second scheduler instance racing on the same job — must be rejected,
+	// not silently overwrite the first decision.
+	_, err = svc.AssignToWorkers(context.Background(), job.ID, []string{"worker-2"})
+	if !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("expected ErrInvalidState for a duplicate assignment, got %v", err)
+	}
+}
+
+func TestServiceAssignToWorkersMissingJobReturnsErrNotFound(t *testing.T) {
+	svc, _ := newTestService()
+	_, err := svc.AssignToWorkers(context.Background(), "does-not-exist", []string{"worker-1"})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestServiceCancelScheduledJobSucceeds(t *testing.T) {
+	svc, _ := newTestService()
+	job, err := svc.Submit(context.Background(), validSubmitInput())
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if _, err := svc.AssignToWorkers(context.Background(), job.ID, []string{"worker-1"}); err != nil {
+		t.Fatalf("AssignToWorkers returned error: %v", err)
+	}
+
+	cancelled, err := svc.Cancel(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("Cancel returned error: %v", err)
+	}
+	if cancelled.State != StateCancelled {
+		t.Errorf("State = %q, want %q", cancelled.State, StateCancelled)
+	}
+}
+
+func TestServiceListActiveExcludesTerminalJobs(t *testing.T) {
+	svc, _ := newTestService()
+	ctx := context.Background()
+
+	queued, err := svc.Submit(ctx, validSubmitInput())
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	cancelled, err := svc.Submit(ctx, validSubmitInput())
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if _, err := svc.Cancel(ctx, cancelled.ID); err != nil {
+		t.Fatalf("Cancel returned error: %v", err)
+	}
+
+	active, err := svc.ListActive(ctx)
+	if err != nil {
+		t.Fatalf("ListActive returned error: %v", err)
+	}
+	if len(active) != 1 || active[0].ID != queued.ID {
+		t.Fatalf("expected only the still-QUEUED job, got %+v", active)
+	}
+}
+
+func TestServiceListActiveOrdersByPriorityThenCreatedAt(t *testing.T) {
+	repo := NewMemoryRepository()
+	svc := NewService(repo)
+	ctx := context.Background()
+
+	base := validSubmitInput()
+	low := base
+	low.Priority = 10
+	high := base
+	high.Priority = 90
+	mid := base
+	mid.Priority = 50
+
+	lowJob, err := svc.Submit(ctx, low)
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	highJob, err := svc.Submit(ctx, high)
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	midJob, err := svc.Submit(ctx, mid)
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+
+	active, err := svc.ListActive(ctx)
+	if err != nil {
+		t.Fatalf("ListActive returned error: %v", err)
+	}
+	if len(active) != 3 {
+		t.Fatalf("expected 3 active jobs, got %d", len(active))
+	}
+	want := []string{highJob.ID, midJob.ID, lowJob.ID}
+	for i, id := range want {
+		if active[i].ID != id {
+			t.Errorf("position %d: got job %q (priority %d), want %q", i, active[i].ID, active[i].Priority, id)
+		}
+	}
+}

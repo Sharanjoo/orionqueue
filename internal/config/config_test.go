@@ -61,14 +61,20 @@ func TestLoadRejectsMalformedGRPCAddr(t *testing.T) {
 	}
 }
 
-func TestDefaultDatabaseURLIsSetForAPIOnly(t *testing.T) {
+func TestDefaultDatabaseURLIsSetForClusterServicesOnly(t *testing.T) {
 	api := Defaults("orionqueue-api")
 	if api.DatabaseURL == "" {
 		t.Error("expected orionqueue-api to have a non-empty default DatabaseURL")
 	}
+	// orionqueue-scheduler also needs PostgreSQL as of Phase 5 (to fetch
+	// active jobs/workers and persist scheduling decisions).
 	scheduler := Defaults("orionqueue-scheduler")
-	if scheduler.DatabaseURL != "" {
-		t.Errorf("expected orionqueue-scheduler to have an empty default DatabaseURL, got %q", scheduler.DatabaseURL)
+	if scheduler.DatabaseURL == "" {
+		t.Error("expected orionqueue-scheduler to have a non-empty default DatabaseURL")
+	}
+	other := Defaults("some-future-service")
+	if other.DatabaseURL != "" {
+		t.Errorf("expected an unrecognized service to have an empty default DatabaseURL, got %q", other.DatabaseURL)
 	}
 }
 
@@ -99,21 +105,65 @@ func TestLoadRejectsNonPostgresDatabaseURL(t *testing.T) {
 	}
 }
 
-func TestValidateDoesNotRequireDatabaseURLForNonAPIServices(t *testing.T) {
-	cfg := Config{ServiceName: "orionqueue-scheduler", Environment: "local", HTTPAddr: ":7081", LogLevel: "info"}
+func TestValidateDoesNotRequireDatabaseURLForServicesThatDontUseCluster(t *testing.T) {
+	cfg := Config{ServiceName: "some-future-service", Environment: "local", HTTPAddr: ":7081", LogLevel: "info"}
 	if err := cfg.Validate(); err != nil {
-		t.Errorf("expected orionqueue-scheduler to validate without a DatabaseURL, got: %v", err)
+		t.Errorf("expected a non-cluster service to validate without a DatabaseURL, got: %v", err)
 	}
 }
 
-func TestDefaultEtcdEndpointsIsSetForAPIOnly(t *testing.T) {
+func TestValidateRequiresDatabaseURLForScheduler(t *testing.T) {
+	cfg := Config{ServiceName: "orionqueue-scheduler", Environment: "local", HTTPAddr: ":7081", LogLevel: "info", SchedulingIntervalSeconds: 5}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected orionqueue-scheduler to require a non-empty DatabaseURL")
+	}
+}
+
+func TestDefaultEtcdEndpointsIsSetForClusterServicesOnly(t *testing.T) {
 	api := Defaults("orionqueue-api")
 	if len(api.EtcdEndpoints) == 0 {
 		t.Error("expected orionqueue-api to have non-empty default EtcdEndpoints")
 	}
+	// orionqueue-scheduler also needs etcd as of Phase 5 (leader election).
 	scheduler := Defaults("orionqueue-scheduler")
-	if len(scheduler.EtcdEndpoints) != 0 {
-		t.Errorf("expected orionqueue-scheduler to have empty default EtcdEndpoints, got %v", scheduler.EtcdEndpoints)
+	if len(scheduler.EtcdEndpoints) == 0 {
+		t.Error("expected orionqueue-scheduler to have non-empty default EtcdEndpoints")
+	}
+	other := Defaults("some-future-service")
+	if len(other.EtcdEndpoints) != 0 {
+		t.Errorf("expected an unrecognized service to have empty default EtcdEndpoints, got %v", other.EtcdEndpoints)
+	}
+}
+
+func TestDefaultSchedulingIntervalIsPositive(t *testing.T) {
+	cfg := Defaults("orionqueue-scheduler")
+	if cfg.SchedulingIntervalSeconds <= 0 {
+		t.Errorf("SchedulingIntervalSeconds = %d, want > 0", cfg.SchedulingIntervalSeconds)
+	}
+}
+
+func TestLoadAppliesSchedulingIntervalOverride(t *testing.T) {
+	t.Setenv("ORIONQUEUE_SCHEDULING_INTERVAL_SECONDS", "10")
+	cfg, err := Load("orionqueue-scheduler")
+	if err != nil {
+		t.Fatalf("Load returned unexpected error: %v", err)
+	}
+	if cfg.SchedulingIntervalSeconds != 10 {
+		t.Errorf("SchedulingIntervalSeconds = %d, want 10", cfg.SchedulingIntervalSeconds)
+	}
+}
+
+func TestLoadRejectsNonNumericSchedulingInterval(t *testing.T) {
+	t.Setenv("ORIONQUEUE_SCHEDULING_INTERVAL_SECONDS", "not-a-number")
+	if _, err := Load("orionqueue-scheduler"); err == nil {
+		t.Fatal("expected Load to reject a non-numeric ORIONQUEUE_SCHEDULING_INTERVAL_SECONDS")
+	}
+}
+
+func TestLoadRejectsZeroSchedulingInterval(t *testing.T) {
+	t.Setenv("ORIONQUEUE_SCHEDULING_INTERVAL_SECONDS", "0")
+	if _, err := Load("orionqueue-scheduler"); err == nil {
+		t.Fatal("expected Load to reject a zero ORIONQUEUE_SCHEDULING_INTERVAL_SECONDS")
 	}
 }
 

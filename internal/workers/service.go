@@ -208,6 +208,12 @@ func (s *Service) List(ctx context.Context, opts ListOptions) (ListResult, error
 	return s.repo.List(ctx, opts)
 }
 
+// ListActive returns every ACTIVE worker (with GPU inventory),
+// unpaginated — see Repository.ListActive.
+func (s *Service) ListActive(ctx context.Context) ([]Worker, error) {
+	return s.repo.ListActive(ctx)
+}
+
 // WatchExpirations watches for worker lease expirations and marks the
 // corresponding worker LOST — this is what makes worker-loss detection
 // automatic rather than something a client has to poll for. Intended to

@@ -34,10 +34,14 @@ type Config struct {
 	// already applied (see scripts/migrate.sh) — nothing in this package
 	// or in internal/persistence runs migrations automatically.
 	DatabaseURL string
-	// EtcdEndpoints is a comma-separated list of etcd endpoints, used for
-	// worker liveness leases (only cmd/api, as of Phase 4 — see
-	// internal/leases and ADR-0001).
+	// EtcdEndpoints is a comma-separated list of etcd endpoints. cmd/api
+	// uses it for worker liveness leases (Phase 4); cmd/scheduler uses it
+	// for leader election (Phase 5) — see internal/leases and ADR-0001.
 	EtcdEndpoints []string
+	// SchedulingIntervalSeconds is how often cmd/scheduler runs a
+	// scheduling pass while it holds leadership. Only meaningful for
+	// orionqueue-scheduler.
+	SchedulingIntervalSeconds int64
 	// LogLevel controls the minimum level emitted by the service's
 	// structured logger ("debug", "info", "warn", or "error").
 	LogLevel string
@@ -48,42 +52,43 @@ type Config struct {
 // runnable Config even with no environment variables set.
 func Defaults(serviceName string) Config {
 	return Config{
-		ServiceName:   serviceName,
-		Environment:   "local",
-		HTTPAddr:      defaultHTTPAddr(serviceName),
-		GRPCAddr:      defaultGRPCAddr(serviceName),
-		DatabaseURL:   defaultDatabaseURL(serviceName),
-		EtcdEndpoints: defaultEtcdEndpoints(serviceName),
-		LogLevel:      "info",
+		ServiceName:               serviceName,
+		Environment:               "local",
+		HTTPAddr:                  defaultHTTPAddr(serviceName),
+		GRPCAddr:                  defaultGRPCAddr(serviceName),
+		DatabaseURL:               defaultDatabaseURL(serviceName),
+		EtcdEndpoints:             defaultEtcdEndpoints(serviceName),
+		SchedulingIntervalSeconds: 5,
+		LogLevel:                  "info",
 	}
 }
 
+// usesClusterDeps reports whether serviceName needs PostgreSQL and etcd —
+// both cmd/api (Phase 3/4) and cmd/scheduler (Phase 5) do; cmd/worker
+// (the Python agent) doesn't go through this package at all.
+func usesClusterDeps(serviceName string) bool {
+	return serviceName == "orionqueue-api" || serviceName == "orionqueue-scheduler"
+}
+
 // defaultEtcdEndpoints matches docker-compose.yml's etcd service, so
-// `docker compose up` needs no extra configuration. Empty for services
-// that don't use etcd yet (cmd/scheduler, until Phase 5's leader
-// election).
+// `docker compose up` needs no extra configuration.
 func defaultEtcdEndpoints(serviceName string) []string {
-	switch serviceName {
-	case "orionqueue-api":
+	if usesClusterDeps(serviceName) {
 		return []string{"localhost:2379"}
-	default:
-		return nil
 	}
+	return nil
 }
 
 // defaultDatabaseURL matches docker-compose.yml's postgres service
 // credentials, so `docker compose up` needs no extra configuration.
 // Outside Compose (e.g. `go run ./cmd/api` against a manually started
 // Postgres container), override with ORIONQUEUE_DATABASE_URL if your
-// setup differs. Empty for services that don't use PostgreSQL yet
-// (cmd/scheduler, until Phase 5).
+// setup differs.
 func defaultDatabaseURL(serviceName string) string {
-	switch serviceName {
-	case "orionqueue-api":
+	if usesClusterDeps(serviceName) {
 		return "postgres://orionqueue:orionqueue@localhost:5432/orionqueue?sslmode=disable"
-	default:
-		return ""
 	}
+	return ""
 }
 
 // defaultHTTPAddr gives each known service its own default port so
@@ -138,6 +143,13 @@ func Load(serviceName string) (Config, error) {
 	if v, ok := os.LookupEnv("ORIONQUEUE_ETCD_ENDPOINTS"); ok && v != "" {
 		cfg.EtcdEndpoints = strings.Split(v, ",")
 	}
+	if v, ok := os.LookupEnv("ORIONQUEUE_SCHEDULING_INTERVAL_SECONDS"); ok && v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid ORIONQUEUE_SCHEDULING_INTERVAL_SECONDS %q: %w", v, err)
+		}
+		cfg.SchedulingIntervalSeconds = n
+	}
 	if v, ok := os.LookupEnv("ORIONQUEUE_LOG_LEVEL"); ok && v != "" {
 		cfg.LogLevel = v
 	}
@@ -166,21 +178,24 @@ func (c Config) Validate() error {
 			return fmt.Errorf("invalid ORIONQUEUE_GRPC_ADDR %q: %w", c.GRPCAddr, err)
 		}
 	}
-	if c.ServiceName == "orionqueue-api" {
+	if usesClusterDeps(c.ServiceName) {
 		if c.DatabaseURL == "" {
-			return fmt.Errorf("ORIONQUEUE_DATABASE_URL must not be empty for orionqueue-api")
+			return fmt.Errorf("ORIONQUEUE_DATABASE_URL must not be empty for %s", c.ServiceName)
 		}
 		if !strings.HasPrefix(c.DatabaseURL, "postgres://") && !strings.HasPrefix(c.DatabaseURL, "postgresql://") {
 			return fmt.Errorf("invalid ORIONQUEUE_DATABASE_URL: must start with postgres:// or postgresql://")
 		}
 		if len(c.EtcdEndpoints) == 0 {
-			return fmt.Errorf("ORIONQUEUE_ETCD_ENDPOINTS must not be empty for orionqueue-api")
+			return fmt.Errorf("ORIONQUEUE_ETCD_ENDPOINTS must not be empty for %s", c.ServiceName)
 		}
 		for _, ep := range c.EtcdEndpoints {
 			if strings.TrimSpace(ep) == "" {
 				return fmt.Errorf("ORIONQUEUE_ETCD_ENDPOINTS must not contain empty entries")
 			}
 		}
+	}
+	if c.ServiceName == "orionqueue-scheduler" && c.SchedulingIntervalSeconds <= 0 {
+		return fmt.Errorf("ORIONQUEUE_SCHEDULING_INTERVAL_SECONDS must be positive, got %d", c.SchedulingIntervalSeconds)
 	}
 	return nil
 }

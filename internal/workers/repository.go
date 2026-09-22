@@ -44,4 +44,10 @@ type Repository interface {
 	// fn, and stores whatever fn returns — or leaves the worker unchanged
 	// and returns fn's error if fn fails.
 	Update(ctx context.Context, id string, fn func(Worker) (Worker, error)) (Worker, error)
+
+	// ListActive returns every worker with Status == StatusActive
+	// (including their GPU inventory), unpaginated — internal/scheduler
+	// needs the complete current fleet in one call to compute placement
+	// decisions, not a page of it.
+	ListActive(ctx context.Context) ([]Worker, error)
 }

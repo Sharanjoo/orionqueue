@@ -99,20 +99,21 @@ func (s *Service) List(ctx context.Context, opts ListOptions) (ListResult, error
 
 // Cancel requests cancellation of the job with the given ID.
 //
-// Phase 2 scope: a QUEUED or RETRYING job (nothing is executing it yet)
-// transitions directly to CANCELLED. A job already in a terminal state
-// (SUCCEEDED, FAILED, CANCELLED) is a no-op that returns the job
-// unchanged — this is what makes Cancel idempotent, and what lets a
-// client safely retry a cancel request. Cancelling a RUNNING job (which
-// requires a graceful-termination signal to a worker) is implemented in
-// Phase 7, once the scheduler/worker execution loop exists for a job to
-// actually be running on.
+// A QUEUED, RETRYING, or SCHEDULED job — nothing is actually executing it
+// yet, even once Phase 5's scheduler has assigned it to a worker, since
+// worker-side execution doesn't exist until Phase 6 — transitions
+// directly to CANCELLED. A job already in a terminal state (SUCCEEDED,
+// FAILED, CANCELLED) is a no-op that returns the job unchanged — this is
+// what makes Cancel idempotent, and what lets a client safely retry a
+// cancel request. Cancelling a RUNNING job (which requires a
+// graceful-termination signal to a worker) is implemented in Phase 7,
+// once a job can actually be RUNNING.
 func (s *Service) Cancel(ctx context.Context, id string) (Job, error) {
 	return s.repo.Update(ctx, id, func(job Job) (Job, error) {
 		switch {
 		case job.State.Terminal():
 			return job, nil
-		case job.State == StateQueued || job.State == StateRetrying:
+		case job.State == StateQueued || job.State == StateRetrying || job.State == StateScheduled:
 			job.State = StateCancelled
 			now := s.now().UTC()
 			job.CompletedAt = &now
@@ -124,6 +125,34 @@ func (s *Service) Cancel(ctx context.Context, id string) (Job, error) {
 			)
 		}
 	})
+}
+
+// AssignToWorkers records the scheduler's decision to place job onto
+// workerIDs, transitioning it from QUEUED to SCHEDULED. It only succeeds
+// if the job is still QUEUED at the moment of the (row-locked) update —
+// if another scheduler instance already assigned it (or a client
+// cancelled it) between when this caller read the job and now,
+// AssignToWorkers returns ErrInvalidState instead of silently overwriting
+// a conflicting decision. Combined with Repository.Update's row-level
+// locking (SELECT ... FOR UPDATE in the PostgreSQL implementation), this
+// is what makes concurrent scheduler replicas safe even during a brief
+// leader-election split-brain window, not just etcd leader election
+// alone — see docs/adr/0002-scheduler-design.md.
+func (s *Service) AssignToWorkers(ctx context.Context, id string, workerIDs []string) (Job, error) {
+	return s.repo.Update(ctx, id, func(job Job) (Job, error) {
+		if job.State != StateQueued {
+			return Job{}, fmt.Errorf("%w: AssignToWorkers requires state QUEUED, job is %s", ErrInvalidState, job.State)
+		}
+		job.State = StateScheduled
+		job.AssignedWorkerIDs = append([]string(nil), workerIDs...)
+		return job, nil
+	})
+}
+
+// ListActive returns every job in a non-terminal state, ordered by
+// (Priority DESC, CreatedAt ASC) — see Repository.ListActive.
+func (s *Service) ListActive(ctx context.Context) ([]Job, error) {
+	return s.repo.ListActive(ctx)
 }
 
 // Retry moves a FAILED job back to QUEUED for another attempt, as long as

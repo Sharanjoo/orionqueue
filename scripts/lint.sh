@@ -6,6 +6,14 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 cd "$REPO_ROOT"
 
+export PATH="$PATH:$(go env GOPATH)/bin"
+if command -v buf >/dev/null 2>&1; then
+  echo "==> buf lint"
+  buf lint
+else
+  echo "==> buf not installed locally, skipping (run scripts/proto-gen.sh once to install it; CI always runs buf lint)"
+fi
+
 echo "==> gofmt -l (fails if any .go file is unformatted)"
 unformatted="$(gofmt -l .)"
 if [ -n "$unformatted" ]; then

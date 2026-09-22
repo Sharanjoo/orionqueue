@@ -1,0 +1,108 @@
+syntax = "proto3";
+
+package orionqueue.v1;
+
+import "google/api/annotations.proto";
+import "orionqueue/v1/job.proto";
+
+option go_package = "github.com/Sharanjoo/orionqueue/internal/api/gen/orionqueue/v1;orionqueuev1";
+
+message SubmitJobRequest {
+  string name = 1;
+  string owner = 2;
+  string image = 3;
+  repeated string command = 4;
+
+  ResourceRequest resources = 5;
+  int32 priority = 6;
+  bool preemptible = 7;
+
+  int32 retry_limit = 8;
+  int64 timeout_seconds = 9;
+  int64 checkpoint_interval_seconds = 10;
+
+  // submission_id is an optional client-supplied idempotency key. A
+  // second SubmitJob call with the same non-empty submission_id returns
+  // the original job instead of creating a duplicate.
+  string submission_id = 11;
+}
+
+message SubmitJobResponse {
+  Job job = 1;
+}
+
+message GetJobRequest {
+  string id = 1;
+}
+
+message GetJobResponse {
+  Job job = 1;
+}
+
+message ListJobsRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+  // state_filter restricts results to jobs in this state;
+  // JOB_STATE_UNSPECIFIED (the default) means no filter.
+  JobState state_filter = 3;
+}
+
+message ListJobsResponse {
+  repeated Job jobs = 1;
+  string next_page_token = 2;
+}
+
+message CancelJobRequest {
+  string id = 1;
+}
+
+message CancelJobResponse {
+  Job job = 1;
+}
+
+message RetryJobRequest {
+  string id = 1;
+}
+
+message RetryJobResponse {
+  Job job = 1;
+}
+
+// JobService is OrionQueue's job submission and management API. Phase 2
+// scope: SubmitJob, GetJob, ListJobs, CancelJob, RetryJob. WatchJob
+// (streaming job events) is added in Phase 3, once job_events history
+// exists in PostgreSQL for it to stream from.
+service JobService {
+  rpc SubmitJob(SubmitJobRequest) returns (SubmitJobResponse) {
+    option (google.api.http) = {
+      post: "/api/v1/jobs"
+      body: "*"
+    };
+  }
+
+  rpc GetJob(GetJobRequest) returns (GetJobResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/jobs/{id}"
+    };
+  }
+
+  rpc ListJobs(ListJobsRequest) returns (ListJobsResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/jobs"
+    };
+  }
+
+  rpc CancelJob(CancelJobRequest) returns (CancelJobResponse) {
+    option (google.api.http) = {
+      post: "/api/v1/jobs/{id}/cancel"
+      body: "*"
+    };
+  }
+
+  rpc RetryJob(RetryJobRequest) returns (RetryJobResponse) {
+    option (google.api.http) = {
+      post: "/api/v1/jobs/{id}/retry"
+      body: "*"
+    };
+  }
+}

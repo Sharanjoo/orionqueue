@@ -1,0 +1,464 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "orionqueue/v1/job_service.proto",
+    "version": "version not set"
+  },
+  "tags": [
+    {
+      "name": "JobService",
+      "description": "JobService is OrionQueue's job submission and management API. Phase 2\nscope: SubmitJob, GetJob, ListJobs, CancelJob, RetryJob. WatchJob\n(streaming job events) is added in Phase 3, once job_events history\nexists in PostgreSQL for it to stream from."
+    }
+  ],
+  "consumes": [
+    "application/json"
+  ],
+  "produces": [
+    "application/json"
+  ],
+  "paths": {
+    "/api/v1/jobs": {
+      "get": {
+        "operationId": "JobService_ListJobs",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ListJobsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "pageSize",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          },
+          {
+            "name": "pageToken",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "stateFilter",
+            "description": "state_filter restricts results to jobs in this state;\nJOB_STATE_UNSPECIFIED (the default) means no filter.",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "enum": [
+              "JOB_STATE_UNSPECIFIED",
+              "JOB_STATE_QUEUED",
+              "JOB_STATE_SCHEDULED",
+              "JOB_STATE_RUNNING",
+              "JOB_STATE_CHECKPOINTING",
+              "JOB_STATE_SUCCEEDED",
+              "JOB_STATE_FAILED",
+              "JOB_STATE_RETRYING",
+              "JOB_STATE_CANCEL_REQUESTED",
+              "JOB_STATE_CANCELLED",
+              "JOB_STATE_PREEMPTED",
+              "JOB_STATE_LOST"
+            ],
+            "default": "JOB_STATE_UNSPECIFIED"
+          }
+        ],
+        "tags": [
+          "JobService"
+        ]
+      },
+      "post": {
+        "operationId": "JobService_SubmitJob",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1SubmitJobResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1SubmitJobRequest"
+            }
+          }
+        ],
+        "tags": [
+          "JobService"
+        ]
+      }
+    },
+    "/api/v1/jobs/{id}": {
+      "get": {
+        "operationId": "JobService_GetJob",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1GetJobResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "JobService"
+        ]
+      }
+    },
+    "/api/v1/jobs/{id}/cancel": {
+      "post": {
+        "operationId": "JobService_CancelJob",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1CancelJobResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/JobServiceCancelJobBody"
+            }
+          }
+        ],
+        "tags": [
+          "JobService"
+        ]
+      }
+    },
+    "/api/v1/jobs/{id}/retry": {
+      "post": {
+        "operationId": "JobService_RetryJob",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1RetryJobResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/JobServiceRetryJobBody"
+            }
+          }
+        ],
+        "tags": [
+          "JobService"
+        ]
+      }
+    }
+  },
+  "definitions": {
+    "JobServiceCancelJobBody": {
+      "type": "object"
+    },
+    "JobServiceRetryJobBody": {
+      "type": "object"
+    },
+    "protobufAny": {
+      "type": "object",
+      "properties": {
+        "@type": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": {}
+    },
+    "rpcStatus": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "message": {
+          "type": "string"
+        },
+        "details": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/protobufAny"
+          }
+        }
+      }
+    },
+    "v1CancelJobResponse": {
+      "type": "object",
+      "properties": {
+        "job": {
+          "$ref": "#/definitions/v1Job"
+        }
+      }
+    },
+    "v1GetJobResponse": {
+      "type": "object",
+      "properties": {
+        "job": {
+          "$ref": "#/definitions/v1Job"
+        }
+      }
+    },
+    "v1Job": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "owner": {
+          "type": "string"
+        },
+        "image": {
+          "type": "string"
+        },
+        "command": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "resources": {
+          "$ref": "#/definitions/v1ResourceRequest"
+        },
+        "priority": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "preemptible": {
+          "type": "boolean"
+        },
+        "retryLimit": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "currentAttempt": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "timeoutSeconds": {
+          "type": "string",
+          "format": "int64"
+        },
+        "checkpointIntervalSeconds": {
+          "type": "string",
+          "format": "int64"
+        },
+        "state": {
+          "$ref": "#/definitions/v1JobState"
+        },
+        "assignedWorkerIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "failureReason": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "completedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "failedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "description": "Job is OrionQueue's job record as seen through the API."
+    },
+    "v1JobState": {
+      "type": "string",
+      "enum": [
+        "JOB_STATE_UNSPECIFIED",
+        "JOB_STATE_QUEUED",
+        "JOB_STATE_SCHEDULED",
+        "JOB_STATE_RUNNING",
+        "JOB_STATE_CHECKPOINTING",
+        "JOB_STATE_SUCCEEDED",
+        "JOB_STATE_FAILED",
+        "JOB_STATE_RETRYING",
+        "JOB_STATE_CANCEL_REQUESTED",
+        "JOB_STATE_CANCELLED",
+        "JOB_STATE_PREEMPTED",
+        "JOB_STATE_LOST"
+      ],
+      "default": "JOB_STATE_UNSPECIFIED",
+      "description": "JobState mirrors the state machine documented in\ndocs/architecture/system-overview.md. Every job starts at QUEUED;\nSCHEDULED/RUNNING/CHECKPOINTING are set by the scheduler and worker\nstarting Phase 5/6, not by this API."
+    },
+    "v1ListJobsResponse": {
+      "type": "object",
+      "properties": {
+        "jobs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1Job"
+          }
+        },
+        "nextPageToken": {
+          "type": "string"
+        }
+      }
+    },
+    "v1ResourceRequest": {
+      "type": "object",
+      "properties": {
+        "gpuCount": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "minGpuMemoryBytes": {
+          "type": "string",
+          "format": "int64"
+        },
+        "cpuCores": {
+          "type": "number",
+          "format": "double"
+        },
+        "memoryBytes": {
+          "type": "string",
+          "format": "int64"
+        }
+      },
+      "description": "ResourceRequest describes the compute a job needs. Eligibility against\nactual cluster capacity is checked by the scheduler (Phase 5), not at\nsubmission time."
+    },
+    "v1RetryJobResponse": {
+      "type": "object",
+      "properties": {
+        "job": {
+          "$ref": "#/definitions/v1Job"
+        }
+      }
+    },
+    "v1SubmitJobRequest": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "owner": {
+          "type": "string"
+        },
+        "image": {
+          "type": "string"
+        },
+        "command": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "resources": {
+          "$ref": "#/definitions/v1ResourceRequest"
+        },
+        "priority": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "preemptible": {
+          "type": "boolean"
+        },
+        "retryLimit": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "timeoutSeconds": {
+          "type": "string",
+          "format": "int64"
+        },
+        "checkpointIntervalSeconds": {
+          "type": "string",
+          "format": "int64"
+        },
+        "submissionId": {
+          "type": "string",
+          "description": "submission_id is an optional client-supplied idempotency key. A\nsecond SubmitJob call with the same non-empty submission_id returns\nthe original job instead of creating a duplicate."
+        }
+      }
+    },
+    "v1SubmitJobResponse": {
+      "type": "object",
+      "properties": {
+        "job": {
+          "$ref": "#/definitions/v1Job"
+        }
+      }
+    }
+  }
+}

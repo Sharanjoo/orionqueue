@@ -22,6 +22,7 @@ func TestDefaultHTTPAddrIsPerService(t *testing.T) {
 func TestLoadAppliesEnvOverrides(t *testing.T) {
 	t.Setenv("ORIONQUEUE_ENVIRONMENT", "ci")
 	t.Setenv("ORIONQUEUE_HTTP_ADDR", ":9090")
+	t.Setenv("ORIONQUEUE_GRPC_ADDR", ":9091")
 	t.Setenv("ORIONQUEUE_LOG_LEVEL", "debug")
 
 	cfg, err := Load("orionqueue-api")
@@ -34,8 +35,29 @@ func TestLoadAppliesEnvOverrides(t *testing.T) {
 	if cfg.HTTPAddr != ":9090" {
 		t.Errorf("HTTPAddr = %q, want %q", cfg.HTTPAddr, ":9090")
 	}
+	if cfg.GRPCAddr != ":9091" {
+		t.Errorf("GRPCAddr = %q, want %q", cfg.GRPCAddr, ":9091")
+	}
 	if cfg.LogLevel != "debug" {
 		t.Errorf("LogLevel = %q, want %q", cfg.LogLevel, "debug")
+	}
+}
+
+func TestDefaultGRPCAddrIsPerServiceAndDiffersFromHTTPAddr(t *testing.T) {
+	api := Defaults("orionqueue-api")
+	scheduler := Defaults("orionqueue-scheduler")
+	if api.GRPCAddr == scheduler.GRPCAddr {
+		t.Fatalf("expected orionqueue-api and orionqueue-scheduler to default to different gRPC addresses, both got %q", api.GRPCAddr)
+	}
+	if api.GRPCAddr == api.HTTPAddr {
+		t.Fatalf("expected GRPCAddr and HTTPAddr to differ, both got %q", api.GRPCAddr)
+	}
+}
+
+func TestLoadRejectsMalformedGRPCAddr(t *testing.T) {
+	t.Setenv("ORIONQUEUE_GRPC_ADDR", "not-an-address")
+	if _, err := Load("orionqueue-api"); err == nil {
+		t.Fatal("expected Load to reject a malformed ORIONQUEUE_GRPC_ADDR")
 	}
 }
 

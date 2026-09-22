@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+package orionqueue.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/Sharanjoo/orionqueue/internal/api/gen/orionqueue/v1;orionqueuev1";
+
+// JobState mirrors the state machine documented in
+// docs/architecture/system-overview.md. Every job starts at QUEUED;
+// SCHEDULED/RUNNING/CHECKPOINTING are set by the scheduler and worker
+// starting Phase 5/6, not by this API.
+enum JobState {
+  JOB_STATE_UNSPECIFIED = 0;
+  JOB_STATE_QUEUED = 1;
+  JOB_STATE_SCHEDULED = 2;
+  JOB_STATE_RUNNING = 3;
+  JOB_STATE_CHECKPOINTING = 4;
+  JOB_STATE_SUCCEEDED = 5;
+  JOB_STATE_FAILED = 6;
+  JOB_STATE_RETRYING = 7;
+  JOB_STATE_CANCEL_REQUESTED = 8;
+  JOB_STATE_CANCELLED = 9;
+  JOB_STATE_PREEMPTED = 10;
+  JOB_STATE_LOST = 11;
+}
+
+// ResourceRequest describes the compute a job needs. Eligibility against
+// actual cluster capacity is checked by the scheduler (Phase 5), not at
+// submission time.
+message ResourceRequest {
+  uint32 gpu_count = 1;
+  int64 min_gpu_memory_bytes = 2;
+  double cpu_cores = 3;
+  int64 memory_bytes = 4;
+}
+
+// Job is OrionQueue's job record as seen through the API.
+message Job {
+  string id = 1;
+  string name = 2;
+  string owner = 3;
+  string image = 4;
+  repeated string command = 5;
+
+  ResourceRequest resources = 6;
+  int32 priority = 7;
+  bool preemptible = 8;
+
+  int32 retry_limit = 9;
+  int32 current_attempt = 10;
+
+  int64 timeout_seconds = 11;
+  int64 checkpoint_interval_seconds = 12;
+
+  JobState state = 13;
+  repeated string assigned_worker_ids = 14;
+  string failure_reason = 15;
+
+  google.protobuf.Timestamp created_at = 16;
+  google.protobuf.Timestamp started_at = 17;
+  google.protobuf.Timestamp completed_at = 18;
+  google.protobuf.Timestamp failed_at = 19;
+}

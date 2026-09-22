@@ -21,9 +21,13 @@ type Config struct {
 	// Environment is a free-form deployment environment label (e.g.
 	// "local", "ci", "staging", "production").
 	Environment string
-	// HTTPAddr is the address the service's HTTP server (health checks
-	// now, the REST gateway from Phase 2 onward) listens on.
+	// HTTPAddr is the address the service's HTTP server (health checks,
+	// and the REST gateway from Phase 2 onward) listens on.
 	HTTPAddr string
+	// GRPCAddr is the address the service's gRPC server listens on.
+	// Empty for services that don't run a gRPC server (only cmd/api does,
+	// as of Phase 2).
+	GRPCAddr string
 	// LogLevel controls the minimum level emitted by the service's
 	// structured logger ("debug", "info", "warn", or "error").
 	LogLevel string
@@ -37,6 +41,7 @@ func Defaults(serviceName string) Config {
 		ServiceName: serviceName,
 		Environment: "local",
 		HTTPAddr:    defaultHTTPAddr(serviceName),
+		GRPCAddr:    defaultGRPCAddr(serviceName),
 		LogLevel:    "info",
 	}
 }
@@ -57,6 +62,19 @@ func defaultHTTPAddr(serviceName string) string {
 	}
 }
 
+// defaultGRPCAddr mirrors defaultHTTPAddr for the gRPC listener. Only
+// cmd/api runs a gRPC server as of Phase 2; other services get a default
+// too (so Config.Validate still passes with zero env vars set) even
+// though nothing listens on it yet.
+func defaultGRPCAddr(serviceName string) string {
+	switch serviceName {
+	case "orionqueue-scheduler":
+		return ":9081"
+	default:
+		return ":9080"
+	}
+}
+
 // Load builds a Config for serviceName, applying ORIONQUEUE_-prefixed
 // environment variable overrides on top of Defaults. Missing variables are
 // never an error (defaults are always valid); a malformed supplied value
@@ -70,6 +88,9 @@ func Load(serviceName string) (Config, error) {
 	}
 	if v, ok := os.LookupEnv("ORIONQUEUE_HTTP_ADDR"); ok && v != "" {
 		cfg.HTTPAddr = v
+	}
+	if v, ok := os.LookupEnv("ORIONQUEUE_GRPC_ADDR"); ok && v != "" {
+		cfg.GRPCAddr = v
 	}
 	if v, ok := os.LookupEnv("ORIONQUEUE_LOG_LEVEL"); ok && v != "" {
 		cfg.LogLevel = v
@@ -93,6 +114,11 @@ func (c Config) Validate() error {
 	}
 	if _, err := portOf(c.HTTPAddr); err != nil {
 		return fmt.Errorf("invalid ORIONQUEUE_HTTP_ADDR %q: %w", c.HTTPAddr, err)
+	}
+	if c.GRPCAddr != "" {
+		if _, err := portOf(c.GRPCAddr); err != nil {
+			return fmt.Errorf("invalid ORIONQUEUE_GRPC_ADDR %q: %w", c.GRPCAddr, err)
+		}
 	}
 	return nil
 }

@@ -12,7 +12,8 @@ services:
     environment:
       ORIONQUEUE_ENVIRONMENT: compose
     ports:
-      - "7080:7080"
+      - "7080:7080" # REST gateway + /healthz, /readyz
+      - "9080:9080" # gRPC (server reflection on, so grpcurl works with no local .proto files)
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:7080/healthz"]
       interval: 10s

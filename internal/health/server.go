@@ -22,16 +22,18 @@ type Checks struct {
 	Ready func(ctx context.Context) error
 }
 
-// NewServer builds an *http.Server exposing /healthz (always 200 once the
-// process is up) and /readyz (200 once checks.Ready succeeds, 503
-// otherwise) for service. Business routes are registered by the caller
-// starting Phase 2; this package only ever owns the health endpoints.
-func NewServer(addr string, logger *slog.Logger, checks Checks) *http.Server {
+// RegisterRoutes adds /healthz (always 200 once the process is up) and
+// /readyz (200 once checks.Ready succeeds, 503 otherwise) to mux. Exposed
+// separately from NewServer so a binary that serves more than health
+// checks on one port (cmd/api, which also serves the REST gateway) can
+// build its own top-level mux, register health routes on it, and mount
+// its other routes alongside them — rather than needing two separate
+// listeners just to get /healthz.
+func RegisterRoutes(mux *http.ServeMux, checks Checks) {
 	if checks.Ready == nil {
 		checks.Ready = func(context.Context) error { return nil }
 	}
 
-	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -45,7 +47,15 @@ func NewServer(addr string, logger *slog.Logger, checks Checks) *http.Server {
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 	})
+}
 
+// NewServer builds an *http.Server exposing only /healthz and /readyz for
+// service — the simple case, used by binaries (cmd/scheduler) that don't
+// serve anything else on their HTTP port. Binaries that need to add more
+// routes use RegisterRoutes directly on their own mux instead.
+func NewServer(addr string, logger *slog.Logger, checks Checks) *http.Server {
+	mux := http.NewServeMux()
+	RegisterRoutes(mux, checks)
 	return &http.Server{
 		Addr:              addr,
 		Handler:           mux,

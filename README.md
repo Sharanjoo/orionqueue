@@ -1,9 +1,10 @@
 # OrionQueue — Distributed GPU Workload Orchestrator
 
-> **Status: Phase 1 (project foundation) complete.** The API, scheduler,
-> worker agent, and frontend all start, are unit-tested, and run together via
-> Docker Compose — but there is no job/worker business logic yet (no gRPC/REST
-> API surface, no scheduling, no GPU simulation). See
+> **Status: Phase 2 (protobuf and API layer) complete.** Jobs can be
+> submitted, looked up, listed, cancelled, and retried through both REST and
+> real gRPC, backed by an in-memory store (PostgreSQL persistence is
+> Phase 3 — job state does not survive a restart yet). There is no
+> scheduler, worker execution, or GPU simulation wired in yet. See
 > [PROJECT_STATUS.md](PROJECT_STATUS.md) for the live phase tracker and
 > [docs/architecture/system-overview.md](docs/architecture/system-overview.md)
 > for the full design.
@@ -60,22 +61,49 @@ Design decisions and their trade-offs are recorded as ADRs in
 
 ## Quick start
 
-What exists today is process-foundation only — config, structured logging,
-health endpoints, and (for the frontend) a status placeholder page. There is
-no job submission API yet (that's Phase 2). Requires Go 1.27+, Python 3.11+,
-Node 20+, and Docker.
+Requires Go 1.27+, Python 3.11+, Node 20+, and Docker.
 
 **Run everything via Docker Compose:**
 
 ```bash
 docker compose up --build
-# api:       http://localhost:7080/healthz, /readyz
+# api:       http://localhost:7080 (REST + health), :9080 (gRPC, reflection on)
 # scheduler: http://localhost:7081/healthz, /readyz
 # frontend:  http://localhost:8088
 # worker:    logs only (no HTTP endpoint yet)
 
 docker compose down
 ```
+
+**Submit and manage a job (REST):**
+
+```bash
+curl -X POST http://localhost:7080/api/v1/jobs -d '{
+  "name": "train-resnet", "owner": "you", "image": "orionqueue/fake-gpu-job:latest",
+  "resources": {"gpu_count": 1, "cpu_cores": 2}, "priority": 50, "retry_limit": 3
+}'
+# -> {"job": {"id": "job-...", "state": "JOB_STATE_QUEUED", ...}}
+
+curl http://localhost:7080/api/v1/jobs                     # list
+curl http://localhost:7080/api/v1/jobs/<id>                # get
+curl -X POST http://localhost:7080/api/v1/jobs/<id>/cancel -d '{}'
+curl -X POST http://localhost:7080/api/v1/jobs/<id>/retry -d '{}'   # only valid once a job has FAILED (Phase 6+)
+```
+
+Submitting twice with the same `submission_id` field returns the original
+job instead of creating a duplicate (idempotent submission).
+
+**Or call the real gRPC service directly**, e.g. with
+[grpcurl](https://github.com/fullstorydev/grpcurl) (server reflection is on,
+so no local `.proto` files are needed):
+
+```bash
+grpcurl -plaintext 127.0.0.1:9080 list orionqueue.v1.JobService
+grpcurl -plaintext -d '{"name":"j1","owner":"you","image":"img"}' 127.0.0.1:9080 orionqueue.v1.JobService/SubmitJob
+```
+
+OpenAPI/Swagger definitions generated from the same protobuf source are at
+`docs/api/orionqueue/v1/*.swagger.json`.
 
 **Or run each service directly, without Docker:**
 
@@ -93,18 +121,19 @@ the Makefile is a thin wrapper.)
 ## Testing
 
 ```bash
-./scripts/fmt.sh    # gofmt, black, prettier — applies formatting
-./scripts/lint.sh   # gofmt -l, go vet, golangci-lint (if installed), ruff, black --check, oxlint, prettier --check
-./scripts/test.sh   # go test, pytest, vitest — all current unit tests
-./scripts/build.sh  # go build + frontend production build
+./scripts/fmt.sh       # gofmt, black, prettier — applies formatting
+./scripts/lint.sh      # buf lint, gofmt -l, go vet, golangci-lint (if installed), ruff, black --check, oxlint, prettier --check
+./scripts/test.sh      # go test, pytest, vitest — all current unit tests
+./scripts/build.sh     # go build + frontend production build
+./scripts/proto-gen.sh # regenerate internal/api/gen/ and docs/api/ from proto/*.proto
 ```
 
-Or `make fmt` / `make lint` / `make test` / `make build`. Current suite: 8 Go
-test functions (3 packages), 16 pytest tests, 3 Vitest tests — all passing;
-see `PROJECT_STATUS.md` for the latest run's actual numbers and coverage.
+Or `make fmt` / `make lint` / `make test` / `make build`. See
+`PROJECT_STATUS.md` for the latest run's actual test counts and coverage.
 Integration, end-to-end, and load test suites are added in later phases as
 the functionality they'd exercise (persistence, scheduling, checkpointing)
-gets built.
+gets built; Phase 2's `internal/api` tests already include real HTTP
+round-trips through the REST gateway, not just unit tests of the handlers.
 
 ## Limitations
 
@@ -112,8 +141,11 @@ This is a single-developer portfolio project, not a production system.
 Deliberately out of scope for now (tracked so it isn't confused with
 something that was simply forgotten):
 
-- Authentication/authorization (middleware will be present but disabled
-  locally — see ADR-0000).
+- Job state does not survive an API restart yet — Phase 2 uses an in-memory
+  store; PostgreSQL-backed persistence is Phase 3.
+- Authentication/authorization (a request-ID/logging middleware exists;
+  `WithAuthPlaceholder` is a deliberate no-op today — see
+  `internal/api/middleware.go`).
 - Multi-tenant isolation, distributed rate limiting, quota management.
 - A real secret-management backend (Docker/K8s secrets only).
 - A full tracing backend (OpenTelemetry hooks will exist without a wired

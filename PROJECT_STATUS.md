@@ -1,17 +1,16 @@
 # OrionQueue — Project Status
 
-Last updated: 2026-09-22 (Phase 1)
+Last updated: 2026-09-22 (Phase 2)
 
 ## Current phase
 
-**Phase 1 — Project foundation.** Complete.
+**Phase 2 — Protobuf and API layer.** Complete.
 
-The Go module, Python worker package, and React/TypeScript dashboard
-scaffold all exist, run, and are covered by real unit tests. All four
-services (API, scheduler, worker, frontend) build as Docker images and were
-verified running together via Docker Compose. See the Phase 1 report in
-conversation history for full command-by-command output; this file tracks
-the current authoritative state.
+Jobs can be submitted, looked up, listed, cancelled, and retried through
+both a real gRPC server and a REST gateway generated from the same
+protobuf source, backed by an in-memory store. See
+[docs/architecture/system-overview.md](docs/architecture/system-overview.md)
+for the design and [README.md](README.md) for runnable examples.
 
 ## Phase tracker
 
@@ -19,7 +18,7 @@ the current authoritative state.
 |---|---|---|
 | 0 | Repository inspection & technical design | Done |
 | 1 | Project foundation | Done |
-| 2 | Protobuf and API layer | Not started |
+| 2 | Protobuf and API layer | Done |
 | 3 | Persistence (PostgreSQL) | Not started |
 | 4 | Worker registration & heartbeats | Not started |
 | 5 | Scheduler | Not started |
@@ -36,106 +35,111 @@ the current authoritative state.
 ## Implemented vs. simulated vs. not yet validated
 
 - **Implemented:**
-  - `cmd/api`, `cmd/scheduler` (Go): config loading, structured JSON
-    logging, `/healthz`/`/readyz`, graceful shutdown. No business logic yet
-    (no job/worker APIs — that's Phase 2+).
-  - `worker/agent` (Python): config loading, structured JSON logging,
-    startup/shutdown loop. No registration, heartbeats, or execution yet
-    (Phase 4+).
-  - `frontend/` (React + TypeScript, Vite): builds and serves a status
-    placeholder page reading nothing from the backend yet (the real
-    dashboard is Phase 11).
-  - Four Docker images (`Dockerfile`, `deploy/docker/{scheduler,worker,frontend}.Dockerfile`)
-    and `docker-compose.yml` wiring them together — built and run-verified
-    this phase.
-  - `.github/workflows/ci.yml`: format/lint/test for Go, Python, and
-    frontend, plus a Docker image build check, on every push/PR to `main`.
-- **Simulated:** nothing yet — the fake-GPU simulator doesn't exist until
-  Phase 6/9.
-- **Not yet validated:** nothing GPU- or cloud-related exists yet to be
-  unvalidated; this section stays empty until Phase 9/13 introduce
-  real-hardware/real-cloud code paths.
+  - `proto/orionqueue/v1/{job,job_service}.proto`: the `Job` domain message
+    and `JobService` (SubmitJob, GetJob, ListJobs, CancelJob, RetryJob),
+    compiled with `buf` into Go gRPC server/client code, grpc-gateway REST
+    handlers, and OpenAPI/Swagger docs (`docs/api/`). `WatchJob` and the
+    worker-facing RPCs (RegisterWorker, WorkerHeartbeat, AssignJob, ...)
+    are deliberately not in this proto yet — added in Phase 3/4/5 once
+    something exists to implement them against.
+  - `internal/jobs`: transport-agnostic domain model, state machine,
+    request validation, an in-memory `Repository`, and a `Service`
+    (submit/get/list/cancel/retry) — no gRPC or protobuf imports.
+  - `internal/api`: `JobServer` (adapts `jobs.Service` to the generated
+    gRPC interface), domain-error → gRPC-status mapping
+    (`ValidationError`→`InvalidArgument`, `ErrNotFound`→`NotFound`,
+    `ErrInvalidState`/`ErrRetryLimitExceeded`→`FailedPrecondition`), the
+    REST gateway (in-process, no network hop to the gRPC listener), and
+    HTTP middleware (`WithRequestID` for correlation IDs + structured
+    per-request logs, `WithAuthPlaceholder` as a documented no-op).
+  - `cmd/api`: runs a real gRPC server (with server reflection, so
+    `grpcurl` works with no local `.proto` files) and the REST gateway
+    together on one process, with coordinated graceful shutdown of both.
+  - Idempotent job submission (`submission_id`), idempotent cancellation,
+    pagination (`page_size`/`page_token`) and state filtering on
+    `ListJobs`.
+- **Simulated:** nothing yet — no fake-GPU/fake-worker code exists until
+  Phase 4/6.
+- **Not yet validated:** nothing GPU- or cloud-related exists yet.
+- **Explicit Phase 2 scope boundary (not a gap):** `RetryJob` is fully
+  implemented and tested, but no job can reach `FAILED` through the API
+  yet (nothing executes jobs until Phase 6) — its tests construct a
+  `FAILED` job directly via the repository. Cancelling a `RUNNING` job
+  (graceful termination) is Phase 7; today only `QUEUED`/`RETRYING` jobs
+  can be cancelled, which is every state a job can actually be in right
+  now.
 
 ## Known issues
 
-- **`golangci-lint` is not installed on this dev machine.** `scripts/lint.sh`
-  runs `gofmt -l`, `go vet`, and every other language's linter locally, and
-  skips `golangci-lint` with an explicit message rather than failing;
-  `.github/workflows/ci.yml` runs it via the official GitHub Action, so it
-  is enforced in CI even though it doesn't run locally yet. Installing it
-  locally (`go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest`)
-  is a nice-to-have, not a blocker.
-- **`go test -race` doesn't run locally.** This machine has no C compiler
-  (`gcc` not found), and `-race` requires cgo. `scripts/test.sh` detects
-  this and runs without `-race` locally, falling back to it automatically
-  if cgo becomes available; CI (Ubuntu, gcc present) always runs with
-  `-race`.
-- **Windows signal handling is best-effort.** Both `internal/health.Run`
-  (Go) and `agent/main.py`'s signal handler register for SIGTERM, but
-  reliable SIGTERM delivery is a POSIX concept — on this Windows dev
-  machine only `os.Interrupt`/Ctrl+C is dependably deliverable in-process.
-  Verified: `os.Interrupt`-triggered shutdown (Go, via `internal/health`
-  unit tests) and Ctrl+C both work; a `timeout`-forced kill during manual
-  testing did not trigger the Python agent's graceful path, consistent with
-  this being a Windows platform limitation rather than a code bug. Full
-  SIGTERM-path verification will happen naturally once this runs in Linux
-  containers/Kubernetes (Phase 12).
-- **Default port 8080 was already in use on this machine** (an unrelated
-  Airflow instance from another project). `cmd/api`/`cmd/scheduler` default
-  to `:7080`/`:7081` instead — confirmed free before choosing them. Both
-  remain overridable via `ORIONQUEUE_HTTP_ADDR`.
+- **Job state is in-memory only** — an API restart loses all jobs. This is
+  Phase 2's intentional scope; Phase 3 replaces `jobs.MemoryRepository`
+  with a PostgreSQL-backed implementation of the same `jobs.Repository`
+  interface, so nothing above that layer changes.
+- Carried over from Phase 1: `golangci-lint` and `gcc` (for `-race`) aren't
+  installed locally; both run in CI. See PROJECT_STATUS.md's Phase 1
+  section in git history, or `docs/adr/0000-local-tooling-adaptations.md`.
+- Full OS-signal-triggered graceful shutdown of `cmd/api`'s combined
+  HTTP+gRPC process isn't independently verified on this Windows dev
+  machine (same SIGTERM caveat as Phase 1); the shutdown code path reuses
+  the same `ctx.Done()` → `Shutdown()` pattern already unit-tested in
+  `internal/health`, plus `grpc.Server.GracefulStop()`, a standard
+  library-adjacent primitive.
 
 ## Measured results
 
-All of the following are actual outputs from this session, not estimates:
+All of the following are actual outputs from this session:
 
-- `go test ./... -cover`: **8 test functions across 3 packages, all
-  passing.** Coverage: `internal/config` 97.1%, `internal/health` 80.6%,
-  `internal/logging` 87.5%. (`cmd/api`/`cmd/scheduler` are thin `main`
-  wiring with 0% coverage by design — their logic lives in the tested
-  packages they call.)
-- `pytest` (worker/): **16 tests passing** across config, logging, and
-  entry-point error handling.
-- `vitest run` (frontend/): **3 tests passing.**
-- `ruff check`, `black --check`, `oxlint`, `prettier --check`, `gofmt -l`,
-  `go vet`: all clean, no findings.
-- `docker compose build`: all four images (`api`, `scheduler`, `worker`,
-  `frontend`) built successfully.
-- `docker compose up`: all four containers reached a running state; `api`
-  and `scheduler` reported Docker healthcheck status `healthy`; `curl` to
-  `/healthz` and `/readyz` on both returned `200`; the frontend served its
-  HTML on port 8088; the worker's structured startup log appeared as
-  expected. Stack was torn down cleanly with `docker compose down`.
-
-Nothing about GPUs, scheduling, checkpointing, or cloud deployment is
-measured yet — those don't exist until later phases, consistent with the
-project's no-fabricated-results rule.
+- `go test ./... -cover`: **all packages passing.** Coverage:
+  `internal/config` 97.6%, `internal/health` 81.6%, `internal/jobs` 90.5%,
+  `internal/api` 89.9%, `internal/logging` 87.5%. (`cmd/api`/`cmd/scheduler`
+  remain 0%-covered process wiring by design, same as Phase 1.)
+  `internal/api` includes real HTTP round-trip tests
+  (`net/http/httptest`) through the actual grpc-gateway wiring, not just
+  direct Go method calls.
+- `buf lint`: clean. `buf generate` output matches what's committed (no
+  generation drift).
+- Manual smoke test against the **compiled, running binary** (not just
+  `go test`), both bare and inside `docker compose up`:
+  - `POST /api/v1/jobs` → 200, returns a `QUEUED` job.
+  - `GET /api/v1/jobs/{id}` → 200 with the submitted job.
+  - `GET /api/v1/jobs` → 200, lists it.
+  - `POST /api/v1/jobs/{id}/cancel` → 200, job → `CANCELLED`; calling it
+    again on the same job → 200 unchanged (idempotent).
+  - `POST /api/v1/jobs/{id}/retry` on a `CANCELLED` job → 400
+    (`FailedPrecondition`, which is grpc-gateway's standard HTTP mapping
+    for that code — not 409, confirmed by actually calling it rather than
+    assumed).
+  - Two `SubmitJob` calls with the same `submission_id` → identical job ID
+    both times, exactly one job stored.
+  - `grpcurl -plaintext 127.0.0.1:9080 ...` against the real gRPC
+    listener (server reflection): `list`, `SubmitJob`, `ListJobs` all
+    confirmed working, and a job submitted via gRPC was visible via REST
+    immediately after (same underlying `jobs.Service` instance).
+  - `docker compose up`: all 4 images rebuilt and started; `api` reported
+    Docker `healthy`; both REST (port 7080) and gRPC (port 9080) worked
+    from outside the container.
 
 ## Assumptions and environment notes
 
-- Dev machine: Windows 11 with Git Bash (MINGW64), Docker Desktop (Linux
-  containers) running, no NVIDIA GPU detected (`nvidia-smi` not found). All
-  GPU behavior will be developed and tested through the fake-GPU simulator;
-  the real-GPU/NCCL path (Phase 9) will be written but marked unvalidated
-  until run on real hardware.
-- Toolchain confirmed locally: Go 1.27, Python 3.12.10, Node 24.14 / npm
-  11.9, Docker 29.3.1 + Compose v5.1.1, Terraform 1.15.8, kubectl 1.34.1
-  (client only), gh CLI 2.98.0. Not present: `make`, `protoc`/`buf`, `etcd`,
-  `psql`, `golangci-lint`, `gcc`, `nvidia-smi` — routed around per
-  [ADR-0000](docs/adr/0000-local-tooling-adaptations.md).
-- This machine already has an unrelated `kind` cluster (`kind-aegisops-dev`)
-  active from another project; OrionQueue's Kubernetes phase will create its
-  own cluster rather than reuse that one.
+- Dev machine and toolchain notes carried over from Phase 0/1 (Windows 11,
+  no local GPU, missing `make`/`protoc`/`etcd`/`psql`/`golangci-lint`/`gcc`)
+  — see `docs/adr/0000-local-tooling-adaptations.md`. Added this phase:
+  `buf`, `protoc-gen-go`, `protoc-gen-go-grpc`, `protoc-gen-grpc-gateway`,
+  `protoc-gen-openapiv2`, and `grpcurl`, all installed via `go install`
+  (no system `protoc` needed, as ADR-0000 planned).
+- The Go module now has real external dependencies (`google.golang.org/grpc`,
+  `google.golang.org/protobuf`, `github.com/grpc-ecosystem/grpc-gateway/v2`)
+  — `go.sum` is committed and both Go Dockerfiles copy it.
 - Per explicit user instruction, Claude does not run `git commit` or
   `git push` in this repo — every phase's report includes the exact
-  commands for the user to run instead. Phase 0 has already been committed
-  and pushed by the user (`b48bc0b`, `origin/main`).
-- This is a 14-phase, multi-service system. It is being built incrementally
-  across sessions, each phase gated on the previous one's tests passing.
+  commands for the user to run instead. Phase 0 and Phase 1 have already
+  been committed and pushed by the user.
 
 ## Next phase
 
-**Phase 2 — Protobuf and API layer**: protobuf contracts (via `buf`), gRPC
-server implementation, REST gateway (`grpc-gateway`), job submission /
-lookup / listing / cancel / retry, validation and error handling, OpenAPI
-docs, and idempotency tests.
+**Phase 3 — Persistence**: PostgreSQL schema and migrations (via
+`golang-migrate`) for jobs, job attempts, workers, GPUs, leases,
+checkpoints, job events, and scheduling decisions; a PostgreSQL-backed
+`jobs.Repository` implementation (swapped in behind the existing
+interface, no API-layer changes); integration tests against a real
+Postgres (Docker); and confirming job state survives an API restart.

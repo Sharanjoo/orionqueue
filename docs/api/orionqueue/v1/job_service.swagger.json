@@ -7,7 +7,7 @@
   "tags": [
     {
       "name": "JobService",
-      "description": "JobService is OrionQueue's job submission and management API. Phase 2\nscope: SubmitJob, GetJob, ListJobs, CancelJob, RetryJob. Phase 6 adds\nReportJobStarted/Completed/Failed. WatchJob (streaming job events) is\nadded once job_events history is exposed through the API — the table\nitself has existed since Phase 3."
+      "description": "JobService is OrionQueue's job submission and management API. Phase 2\nscope: SubmitJob, GetJob, ListJobs, CancelJob, RetryJob. Phase 6 adds\nReportJobStarted/Completed/Failed. Phase 7 adds ReportJobStopped and\nmakes CancelJob able to reach a RUNNING job (previously rejected).\nWatchJob (streaming job events) is added once job_events history is\nexposed through the API — the table itself has existed since Phase 3."
     }
   ],
   "consumes": [

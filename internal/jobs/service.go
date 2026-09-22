@@ -114,25 +114,35 @@ func (s *Service) List(ctx context.Context, opts ListOptions) (ListResult, error
 // transitions directly to CANCELLED. A job already in a terminal state
 // (SUCCEEDED, FAILED, CANCELLED) is a no-op that returns the job
 // unchanged — this is what makes Cancel idempotent, and what lets a
-// client safely retry a cancel request. Cancelling a RUNNING job (which
-// requires sending a graceful-termination signal to the worker actually
-// executing it, then waiting on it) is implemented in Phase 7 — today it
-// returns ErrInvalidState, same as any other unsupported transition.
+// client safely retry a cancel request. A job already CANCEL_REQUESTED is
+// likewise a no-op (a duplicate cancel call while the worker hasn't
+// confirmed yet), not an error.
+//
+// A RUNNING (or CHECKPOINTING) job transitions to CANCEL_REQUESTED, not
+// directly to CANCELLED: something is actually executing it on a worker,
+// and jumping straight to CANCELLED here — before that worker has
+// actually stopped — would let it keep running unobserved (and risk a
+// stale ReportJobCompleted/Failed racing in afterward). CANCEL_REQUESTED
+// is delivered to the worker via WorkerHeartbeatResponse.stop_job_ids
+// (see ListStoppableForWorker); the worker signals its execution thread
+// to stop and calls ReportJobStopped once it has, which is what actually
+// reaches CANCELLED (see ReportStopped). See ADR-0005 for why
+// cancellation and preemption share this same stop-and-confirm mechanism.
 func (s *Service) Cancel(ctx context.Context, id string) (Job, error) {
 	return s.repo.Update(ctx, id, func(job Job) (Job, error) {
 		switch {
-		case job.State.Terminal():
+		case job.State.Terminal(), job.State == StateCancelRequested:
 			return job, nil
 		case job.State == StateQueued || job.State == StateRetrying || job.State == StateScheduled:
 			job.State = StateCancelled
 			now := s.now().UTC()
 			job.CompletedAt = &now
 			return job, nil
+		case job.State == StateRunning || job.State == StateCheckpointing:
+			job.State = StateCancelRequested
+			return job, nil
 		default:
-			return Job{}, fmt.Errorf(
-				"%w: cannot cancel a job in state %s yet (graceful running-job cancellation is implemented in Phase 7)",
-				ErrInvalidState, job.State,
-			)
+			return Job{}, fmt.Errorf("%w: cannot cancel a job in state %s", ErrInvalidState, job.State)
 		}
 	})
 }
@@ -185,6 +195,26 @@ func (s *Service) ListAssignedToWorker(ctx context.Context, workerID string) ([]
 		}
 	}
 	return assigned, nil
+}
+
+// ListStoppableForWorker returns every job assigned to workerID that's
+// CANCEL_REQUESTED or PREEMPTED — the set a worker agent should
+// cooperatively stop, delivered via WorkerHeartbeatResponse.stop_job_ids.
+// Mirrors ListAssignedToWorker's ListActive-scan approach and the same
+// documented trade-off.
+func (s *Service) ListStoppableForWorker(ctx context.Context, workerID string) ([]Job, error) {
+	active, err := s.repo.ListActive(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var stoppable []Job
+	for _, job := range active {
+		if (job.State == StateCancelRequested || job.State == StatePreempted) &&
+			containsString(job.AssignedWorkerIDs, workerID) {
+			stoppable = append(stoppable, job)
+		}
+	}
+	return stoppable, nil
 }
 
 // Start transitions a SCHEDULED job to RUNNING, called when a worker
@@ -240,14 +270,84 @@ func (s *Service) Fail(ctx context.Context, id string, reason string) (Job, erro
 	})
 }
 
-// LoseWorker finds every job assigned to workerID that's still SCHEDULED
-// or RUNNING and recovers it — requeued for another attempt, or marked
-// FAILED if retries are exhausted, the same decision Fail makes for a
-// worker-reported failure. Called when internal/workers detects (via its
-// own etcd-lease-expiry watcher) that workerID has been marked LOST, so a
-// crashed worker's in-flight jobs don't sit SCHEDULED/RUNNING forever —
-// this is what connects Phase 4's automatic worker-loss detection to job
-// execution. Returns how many jobs it recovered, for logging.
+// ReportStopped is called when a worker reports (ReportJobStopped) that it
+// has cooperatively stopped a job's execution in response to a stop
+// signal (see ListStoppableForWorker). What happens next depends on why
+// the job was stopped, read from the job's own current state rather than
+// anything the worker tells us — the worker doesn't need to know or care
+// which:
+//
+//   - CANCEL_REQUESTED -> CANCELLED (terminal): a user asked for this.
+//   - PREEMPTED -> QUEUED (CurrentAttempt unchanged, unassigned): the
+//     scheduler asked for this to make room for a higher-priority job;
+//     per ADR-0005 this must not count against the job's retry limit, so
+//     — unlike Fail/LoseWorker's applyFailureOrRetry — CurrentAttempt is
+//     deliberately left untouched here.
+//   - Any other state (job already moved on some other way — e.g. a
+//     duplicate report, or LoseWorker already resolved it) is a no-op,
+//     for the same idempotency reasons Cancel and Complete already rely
+//     on.
+func (s *Service) ReportStopped(ctx context.Context, id string) (Job, error) {
+	return s.repo.Update(ctx, id, func(job Job) (Job, error) {
+		switch job.State {
+		case StateCancelRequested:
+			job.State = StateCancelled
+			now := s.now().UTC()
+			job.CompletedAt = &now
+			return job, nil
+		case StatePreempted:
+			job.State = StateQueued
+			job.StartedAt = nil
+			job.AssignedWorkerIDs = nil
+			return job, nil
+		default:
+			return job, nil
+		}
+	})
+}
+
+// Preempt transitions a RUNNING job to PREEMPTED, so the scheduler
+// (internal/scheduler.Service.RunOnce, when preemption is cluster-enabled
+// — see ADR-0005) can free a lower-priority job's resources for a
+// strictly higher-priority pending one. Only a job that opted in via
+// Preemptible=true may be preempted — Preempt refuses (ErrInvalidState)
+// otherwise, the same protection SubmitJob's Preemptible field exists
+// for.
+//
+// Like Cancel, this doesn't jump straight to QUEUED: PREEMPTED is a
+// holding state until the worker actually stops execution and confirms
+// via ReportStopped (which is what performs the PREEMPTED -> QUEUED
+// requeue) — see ReportStopped and ListStoppableForWorker.
+// CurrentAttempt is untouched (preemption never counts against
+// RetryLimit).
+func (s *Service) Preempt(ctx context.Context, id string, reason string) (Job, error) {
+	return s.repo.Update(ctx, id, func(job Job) (Job, error) {
+		if job.State != StateRunning {
+			return Job{}, fmt.Errorf("%w: Preempt requires state RUNNING, job is %s", ErrInvalidState, job.State)
+		}
+		if !job.Preemptible {
+			return Job{}, fmt.Errorf("%w: job %s is not preemptible", ErrInvalidState, job.ID)
+		}
+		job.State = StatePreempted
+		job.FailureReason = reason
+		return job, nil
+	})
+}
+
+// LoseWorker finds every job assigned to workerID that's still
+// SCHEDULED, RUNNING, CANCEL_REQUESTED, or PREEMPTED and recovers it, so
+// a crashed worker's in-flight jobs don't sit stuck forever. Called when
+// internal/workers detects (via its own etcd-lease-expiry watcher) that
+// workerID has been marked LOST — this is what connects Phase 4's
+// automatic worker-loss detection to job execution.
+//
+// SCHEDULED/RUNNING jobs get the same requeue-or-fail decision Fail makes
+// for a worker-reported failure (applyFailureOrRetry). CANCEL_REQUESTED
+// and PREEMPTED jobs no longer need the worker's confirmation to move
+// on — a LOST worker can't possibly still be executing anything, so it's
+// safe to finalize immediately exactly as ReportStopped would have:
+// CANCEL_REQUESTED -> CANCELLED, PREEMPTED -> QUEUED. Returns how many
+// jobs it recovered, for logging.
 func (s *Service) LoseWorker(ctx context.Context, workerID string) (int, error) {
 	active, err := s.repo.ListActive(ctx)
 	if err != nil {
@@ -257,7 +357,9 @@ func (s *Service) LoseWorker(ctx context.Context, workerID string) (int, error) 
 	reason := fmt.Sprintf("worker %s was lost", workerID)
 	recovered := 0
 	for _, job := range active {
-		if job.State != StateScheduled && job.State != StateRunning {
+		switch job.State {
+		case StateScheduled, StateRunning, StateCancelRequested, StatePreempted:
+		default:
 			continue
 		}
 		if !containsString(job.AssignedWorkerIDs, workerID) {
@@ -268,10 +370,22 @@ func (s *Service) LoseWorker(ctx context.Context, workerID string) (int, error) 
 			// Re-check inside the lock: another caller may have already
 			// moved this job on (e.g. it completed a split second before
 			// the loss was detected).
-			if j.State != StateScheduled && j.State != StateRunning {
+			switch j.State {
+			case StateScheduled, StateRunning:
+				return applyFailureOrRetry(j, reason, s.now().UTC()), nil
+			case StateCancelRequested:
+				j.State = StateCancelled
+				now := s.now().UTC()
+				j.CompletedAt = &now
+				return j, nil
+			case StatePreempted:
+				j.State = StateQueued
+				j.StartedAt = nil
+				j.AssignedWorkerIDs = nil
+				return j, nil
+			default:
 				return j, nil
 			}
-			return applyFailureOrRetry(j, reason, s.now().UTC()), nil
 		})
 		if err != nil {
 			return recovered, fmt.Errorf("jobs: recover job %s from lost worker %s: %w", job.ID, workerID, err)

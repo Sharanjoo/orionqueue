@@ -56,6 +56,7 @@ func run() int {
 		slog.String("http_addr", cfg.HTTPAddr),
 		slog.Any("etcd_endpoints", cfg.EtcdEndpoints),
 		slog.Int64("scheduling_interval_seconds", cfg.SchedulingIntervalSeconds),
+		slog.Bool("preemption_enabled", cfg.PreemptionEnabled),
 	)
 
 	dbPool, err := persistence.Connect(context.Background(), cfg.DatabaseURL)
@@ -82,7 +83,8 @@ func run() int {
 	jobSvc := jobs.NewService(persistence.NewJobRepository(dbPool))
 	workerSvc := workers.NewService(persistence.NewWorkerRepository(dbPool), leases.NewEtcdManager(etcdClient))
 	decisionRepo := persistence.NewSchedulingDecisionRepository(dbPool)
-	schedulerSvc := scheduler.NewService(jobSvc, workerSvc, decisionRepo)
+	schedulerSvc := scheduler.NewService(jobSvc, workerSvc, decisionRepo,
+		scheduler.WithPreemptionEnabled(cfg.PreemptionEnabled))
 
 	var isLeader atomic.Bool
 	mux := http.NewServeMux()
@@ -201,11 +203,12 @@ func runSchedulingLoop(leaderCtx context.Context, logger *slog.Logger, scheduler
 			logger.Error("scheduling pass failed", slog.String("error", err.Error()))
 			return
 		}
-		if result.Assigned > 0 || result.Conflicted > 0 {
+		if result.Assigned > 0 || result.Conflicted > 0 || result.Preempted > 0 {
 			logger.Info("scheduling pass complete",
 				slog.Int("considered", result.Considered),
 				slog.Int("assigned", result.Assigned),
 				slog.Int("conflicted", result.Conflicted),
+				slog.Int("preempted", result.Preempted),
 			)
 		}
 	}

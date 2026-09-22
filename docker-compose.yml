@@ -91,6 +91,9 @@ services:
       ORIONQUEUE_ENVIRONMENT: compose
       ORIONQUEUE_DATABASE_URL: postgres://orionqueue:orionqueue@postgres:5432/orionqueue?sslmode=disable
       ORIONQUEUE_ETCD_ENDPOINTS: etcd:2379
+      # Off by default per ADR-0005; set ORIONQUEUE_PREEMPTION_ENABLED=true
+      # in your shell before `docker compose up` to turn it on locally.
+      ORIONQUEUE_PREEMPTION_ENABLED: ${ORIONQUEUE_PREEMPTION_ENABLED:-false}
     ports:
       - "7081:7081"
     depends_on:

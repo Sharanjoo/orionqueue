@@ -140,6 +140,17 @@ func (s *JobServer) ReportJobFailed(ctx context.Context, req *pb.ReportJobFailed
 	return &pb.ReportJobFailedResponse{Job: jobToProto(job)}, nil
 }
 
+func (s *JobServer) ReportJobStopped(ctx context.Context, req *pb.ReportJobStoppedRequest) (*pb.ReportJobStoppedResponse, error) {
+	if req.GetJobId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "job_id must not be empty")
+	}
+	job, err := s.svc.ReportStopped(ctx, req.GetJobId())
+	if err != nil {
+		return nil, s.toStatus(err)
+	}
+	return &pb.ReportJobStoppedResponse{Job: jobToProto(job)}, nil
+}
+
 // toStatus maps a jobs-package domain error to the gRPC status it should
 // surface as. grpc-gateway maps these codes to HTTP statuses automatically
 // (InvalidArgument->400, NotFound->404, FailedPrecondition->409,

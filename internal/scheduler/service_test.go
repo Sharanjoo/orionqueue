@@ -180,3 +180,142 @@ func TestServiceRunOnceIsSafeAcrossConcurrentSchedulerInstances(t *testing.T) {
 		t.Errorf("expected exactly 1 recorded decision across both repositories, got %d", totalRecorded)
 	}
 }
+
+func TestServiceRunOnceDoesNotPreemptWhenDisabled(t *testing.T) {
+	svc, jobSvc, workerSvc, _ := newTestServiceStack(t) // preemption off by default
+	ctx := context.Background()
+
+	worker, err := workerSvc.Register(ctx, validWorkerInput()) // 1 GPU
+	if err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+
+	lowIn := validJobInput()
+	lowIn.Priority = 10
+	lowIn.Preemptible = true
+	low, err := jobSvc.Submit(ctx, lowIn)
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if _, err := jobSvc.AssignToWorkers(ctx, low.ID, []string{worker.ID}); err != nil {
+		t.Fatalf("AssignToWorkers returned error: %v", err)
+	}
+	if _, err := jobSvc.Start(ctx, low.ID); err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	highIn := validJobInput()
+	highIn.Priority = 90
+	if _, err := jobSvc.Submit(ctx, highIn); err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+
+	result, err := svc.RunOnce(ctx)
+	if err != nil {
+		t.Fatalf("RunOnce returned error: %v", err)
+	}
+	if result.Preempted != 0 {
+		t.Fatalf("Preempted = %d, want 0 (preemption disabled)", result.Preempted)
+	}
+
+	got, err := jobSvc.Get(ctx, low.ID)
+	if err != nil {
+		t.Fatalf("Get returned error: %v", err)
+	}
+	if got.State != jobs.StateRunning {
+		t.Errorf("low-priority job's State = %q, want unchanged %q", got.State, jobs.StateRunning)
+	}
+}
+
+func TestServiceRunOnceWithPreemptionEnabledPreemptsThenReschedulesAfterStop(t *testing.T) {
+	jobSvc := jobs.NewService(jobs.NewMemoryRepository())
+	workerSvc := workers.NewService(workers.NewMemoryRepository(), leases.NewFakeManager())
+	decisions := NewMemoryDecisionRepository()
+	svc := NewService(jobSvc, workerSvc, decisions, WithPreemptionEnabled(true))
+	ctx := context.Background()
+
+	worker, err := workerSvc.Register(ctx, validWorkerInput()) // 1 GPU total
+	if err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+
+	lowIn := validJobInput()
+	lowIn.Priority = 10
+	lowIn.Preemptible = true
+	low, err := jobSvc.Submit(ctx, lowIn)
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if _, err := jobSvc.AssignToWorkers(ctx, low.ID, []string{worker.ID}); err != nil {
+		t.Fatalf("AssignToWorkers returned error: %v", err)
+	}
+	if _, err := jobSvc.Start(ctx, low.ID); err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	highIn := validJobInput()
+	highIn.Priority = 90
+	high, err := jobSvc.Submit(ctx, highIn)
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+
+	// Pass 1: no capacity is free (worker's only GPU is held by the
+	// RUNNING low-priority job), so the high-priority job can't be
+	// placed outright — this pass should preempt low instead.
+	result, err := svc.RunOnce(ctx)
+	if err != nil {
+		t.Fatalf("RunOnce (pass 1) returned error: %v", err)
+	}
+	if result.Preempted != 1 {
+		t.Fatalf("Preempted = %d, want 1", result.Preempted)
+	}
+	if result.Assigned != 0 {
+		t.Fatalf("Assigned = %d, want 0 (capacity isn't freed until the worker confirms the stop)", result.Assigned)
+	}
+
+	got, err := jobSvc.Get(ctx, low.ID)
+	if err != nil {
+		t.Fatalf("Get returned error: %v", err)
+	}
+	if got.State != jobs.StatePreempted {
+		t.Fatalf("low-priority job's State = %q, want %q", got.State, jobs.StatePreempted)
+	}
+
+	// The worker "confirms" it stopped the preempted job.
+	if _, err := jobSvc.ReportStopped(ctx, low.ID); err != nil {
+		t.Fatalf("ReportStopped returned error: %v", err)
+	}
+
+	// Pass 2: capacity is genuinely free now — the high-priority job
+	// should win the freed GPU (it's the higher-priority QUEUED job).
+	result, err = svc.RunOnce(ctx)
+	if err != nil {
+		t.Fatalf("RunOnce (pass 2) returned error: %v", err)
+	}
+	if result.Assigned != 1 {
+		t.Fatalf("Assigned = %d, want 1", result.Assigned)
+	}
+
+	got, err = jobSvc.Get(ctx, high.ID)
+	if err != nil {
+		t.Fatalf("Get returned error: %v", err)
+	}
+	if got.State != jobs.StateScheduled {
+		t.Errorf("high-priority job's State = %q, want %q", got.State, jobs.StateScheduled)
+	}
+	if len(got.AssignedWorkerIDs) != 1 || got.AssignedWorkerIDs[0] != worker.ID {
+		t.Errorf("AssignedWorkerIDs = %v, want [%s]", got.AssignedWorkerIDs, worker.ID)
+	}
+
+	got, err = jobSvc.Get(ctx, low.ID)
+	if err != nil {
+		t.Fatalf("Get returned error: %v", err)
+	}
+	if got.State != jobs.StateQueued {
+		t.Errorf("preempted job's State = %q, want %q (requeued, no free capacity left for it)", got.State, jobs.StateQueued)
+	}
+	if got.CurrentAttempt != 1 {
+		t.Errorf("preempted job's CurrentAttempt = %d, want unchanged 1", got.CurrentAttempt)
+	}
+}

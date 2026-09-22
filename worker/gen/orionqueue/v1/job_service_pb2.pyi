@@ -139,3 +139,17 @@ class ReportJobFailedResponse(_message.Message):
     JOB_FIELD_NUMBER: _ClassVar[int]
     job: _job_pb2.Job
     def __init__(self, job: _Optional[_Union[_job_pb2.Job, _Mapping]] = ...) -> None: ...
+
+class ReportJobStoppedRequest(_message.Message):
+    __slots__ = ("job_id", "worker_id")
+    JOB_ID_FIELD_NUMBER: _ClassVar[int]
+    WORKER_ID_FIELD_NUMBER: _ClassVar[int]
+    job_id: str
+    worker_id: str
+    def __init__(self, job_id: _Optional[str] = ..., worker_id: _Optional[str] = ...) -> None: ...
+
+class ReportJobStoppedResponse(_message.Message):
+    __slots__ = ("job",)
+    JOB_FIELD_NUMBER: _ClassVar[int]
+    job: _job_pb2.Job
+    def __init__(self, job: _Optional[_Union[_job_pb2.Job, _Mapping]] = ...) -> None: ...

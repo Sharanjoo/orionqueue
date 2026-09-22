@@ -28,9 +28,10 @@ if _version_not_supported:
 class JobServiceStub:
     """JobService is OrionQueue's job submission and management API. Phase 2
     scope: SubmitJob, GetJob, ListJobs, CancelJob, RetryJob. Phase 6 adds
-    ReportJobStarted/Completed/Failed. WatchJob (streaming job events) is
-    added once job_events history is exposed through the API — the table
-    itself has existed since Phase 3.
+    ReportJobStarted/Completed/Failed. Phase 7 adds ReportJobStopped and
+    makes CancelJob able to reach a RUNNING job (previously rejected).
+    WatchJob (streaming job events) is added once job_events history is
+    exposed through the API — the table itself has existed since Phase 3.
     """
 
     def __init__(self, channel):
@@ -79,14 +80,20 @@ class JobServiceStub:
                 request_serializer=orionqueue_dot_v1_dot_job__service__pb2.ReportJobFailedRequest.SerializeToString,
                 response_deserializer=orionqueue_dot_v1_dot_job__service__pb2.ReportJobFailedResponse.FromString,
                 _registered_method=True)
+        self.ReportJobStopped = channel.unary_unary(
+                '/orionqueue.v1.JobService/ReportJobStopped',
+                request_serializer=orionqueue_dot_v1_dot_job__service__pb2.ReportJobStoppedRequest.SerializeToString,
+                response_deserializer=orionqueue_dot_v1_dot_job__service__pb2.ReportJobStoppedResponse.FromString,
+                _registered_method=True)
 
 
 class JobServiceServicer:
     """JobService is OrionQueue's job submission and management API. Phase 2
     scope: SubmitJob, GetJob, ListJobs, CancelJob, RetryJob. Phase 6 adds
-    ReportJobStarted/Completed/Failed. WatchJob (streaming job events) is
-    added once job_events history is exposed through the API — the table
-    itself has existed since Phase 3.
+    ReportJobStarted/Completed/Failed. Phase 7 adds ReportJobStopped and
+    makes CancelJob able to reach a RUNNING job (previously rejected).
+    WatchJob (streaming job events) is added once job_events history is
+    exposed through the API — the table itself has existed since Phase 3.
     """
 
     def SubmitJob(self, request, context):
@@ -137,6 +144,12 @@ class JobServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ReportJobStopped(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_JobServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -180,6 +193,11 @@ def add_JobServiceServicer_to_server(servicer, server):
                     request_deserializer=orionqueue_dot_v1_dot_job__service__pb2.ReportJobFailedRequest.FromString,
                     response_serializer=orionqueue_dot_v1_dot_job__service__pb2.ReportJobFailedResponse.SerializeToString,
             ),
+            'ReportJobStopped': grpc.unary_unary_rpc_method_handler(
+                    servicer.ReportJobStopped,
+                    request_deserializer=orionqueue_dot_v1_dot_job__service__pb2.ReportJobStoppedRequest.FromString,
+                    response_serializer=orionqueue_dot_v1_dot_job__service__pb2.ReportJobStoppedResponse.SerializeToString,
+            ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
             'orionqueue.v1.JobService', rpc_method_handlers)
@@ -191,9 +209,10 @@ def add_JobServiceServicer_to_server(servicer, server):
 class JobService:
     """JobService is OrionQueue's job submission and management API. Phase 2
     scope: SubmitJob, GetJob, ListJobs, CancelJob, RetryJob. Phase 6 adds
-    ReportJobStarted/Completed/Failed. WatchJob (streaming job events) is
-    added once job_events history is exposed through the API — the table
-    itself has existed since Phase 3.
+    ReportJobStarted/Completed/Failed. Phase 7 adds ReportJobStopped and
+    makes CancelJob able to reach a RUNNING job (previously rejected).
+    WatchJob (streaming job events) is added once job_events history is
+    exposed through the API — the table itself has existed since Phase 3.
     """
 
     @staticmethod
@@ -402,6 +421,33 @@ class JobService:
             '/orionqueue.v1.JobService/ReportJobFailed',
             orionqueue_dot_v1_dot_job__service__pb2.ReportJobFailedRequest.SerializeToString,
             orionqueue_dot_v1_dot_job__service__pb2.ReportJobFailedResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ReportJobStopped(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/orionqueue.v1.JobService/ReportJobStopped',
+            orionqueue_dot_v1_dot_job__service__pb2.ReportJobStoppedRequest.SerializeToString,
+            orionqueue_dot_v1_dot_job__service__pb2.ReportJobStoppedResponse.FromString,
             options,
             channel_credentials,
             insecure,

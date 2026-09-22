@@ -170,3 +170,55 @@ func TestWorkerHeartbeatReturnsAssignedJobsNotYetStarted(t *testing.T) {
 		t.Errorf("expected no assigned_jobs after the job was started, got %+v", hbResp2.GetAssignedJobs())
 	}
 }
+
+func TestWorkerHeartbeatReturnsStopJobIdsForCancelRequestedAndPreempted(t *testing.T) {
+	s, _, jobSvc := newTestWorkerServer()
+	ctx := context.Background()
+
+	regResp, err := s.RegisterWorker(ctx, validRegisterWorkerRequest())
+	if err != nil {
+		t.Fatalf("RegisterWorker returned error: %v", err)
+	}
+	workerID := regResp.GetWorker().GetId()
+
+	cancelling, err := jobSvc.Submit(ctx, jobs.SubmitInput{Name: "j1", Owner: "o", Image: "img"})
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if _, err := jobSvc.AssignToWorkers(ctx, cancelling.ID, []string{workerID}); err != nil {
+		t.Fatalf("AssignToWorkers returned error: %v", err)
+	}
+	if _, err := jobSvc.Start(ctx, cancelling.ID); err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	if _, err := jobSvc.Cancel(ctx, cancelling.ID); err != nil {
+		t.Fatalf("Cancel returned error: %v", err)
+	}
+
+	preempting, err := jobSvc.Submit(ctx, jobs.SubmitInput{Name: "j2", Owner: "o", Image: "img", Preemptible: true})
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if _, err := jobSvc.AssignToWorkers(ctx, preempting.ID, []string{workerID}); err != nil {
+		t.Fatalf("AssignToWorkers returned error: %v", err)
+	}
+	if _, err := jobSvc.Start(ctx, preempting.ID); err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	if _, err := jobSvc.Preempt(ctx, preempting.ID, "testing"); err != nil {
+		t.Fatalf("Preempt returned error: %v", err)
+	}
+
+	hbResp, err := s.WorkerHeartbeat(ctx, &pb.WorkerHeartbeatRequest{WorkerId: workerID})
+	if err != nil {
+		t.Fatalf("WorkerHeartbeat returned error: %v", err)
+	}
+	stopIDs := hbResp.GetStopJobIds()
+	if len(stopIDs) != 2 {
+		t.Fatalf("expected 2 stop_job_ids, got %v", stopIDs)
+	}
+	got := map[string]bool{stopIDs[0]: true, stopIDs[1]: true}
+	if !got[cancelling.ID] || !got[preempting.ID] {
+		t.Errorf("expected stop_job_ids to contain both %s and %s, got %v", cancelling.ID, preempting.ID, stopIDs)
+	}
+}

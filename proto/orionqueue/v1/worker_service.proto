@@ -42,6 +42,15 @@ message WorkerHeartbeatResponse {
   // mechanism) reuses a channel the worker is already calling on a
   // steady interval — see docs/architecture/system-overview.md.
   repeated Job assigned_jobs = 2;
+  // stop_job_ids lists jobs assigned to this worker that should be
+  // cooperatively stopped — either a user cancelled a RUNNING job
+  // (server state CANCEL_REQUESTED) or the scheduler preempted it for a
+  // higher-priority job (server state PREEMPTED). Only IDs are sent (the
+  // worker already has these jobs' full details from when it started
+  // them via assigned_jobs); the worker signals its execution thread to
+  // stop and, once stopped, calls JobService.ReportJobStopped — see
+  // docs/adr/0005-preemption-policy.md.
+  repeated string stop_job_ids = 3;
 }
 
 message ListWorkersRequest {

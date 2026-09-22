@@ -234,3 +234,28 @@ func TestValidateAcceptsAllLogLevels(t *testing.T) {
 		}
 	}
 }
+
+func TestDefaultPreemptionEnabledIsFalse(t *testing.T) {
+	cfg := Defaults("orionqueue-scheduler")
+	if cfg.PreemptionEnabled {
+		t.Error("expected PreemptionEnabled to default to false (ADR-0005: off by default)")
+	}
+}
+
+func TestLoadAppliesPreemptionEnabledOverride(t *testing.T) {
+	t.Setenv("ORIONQUEUE_PREEMPTION_ENABLED", "true")
+	cfg, err := Load("orionqueue-scheduler")
+	if err != nil {
+		t.Fatalf("Load returned unexpected error: %v", err)
+	}
+	if !cfg.PreemptionEnabled {
+		t.Error("expected PreemptionEnabled = true")
+	}
+}
+
+func TestLoadRejectsNonBooleanPreemptionEnabled(t *testing.T) {
+	t.Setenv("ORIONQUEUE_PREEMPTION_ENABLED", "not-a-bool")
+	if _, err := Load("orionqueue-scheduler"); err == nil {
+		t.Fatal("expected Load to reject a non-boolean ORIONQUEUE_PREEMPTION_ENABLED")
+	}
+}

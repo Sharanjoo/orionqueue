@@ -45,8 +45,13 @@ class AssignedJob:
 class HeartbeatResult:
     """What the caller needs from a successful WorkerHeartbeat call."""
 
-    def __init__(self, assigned_jobs: list[AssignedJob]) -> None:
+    def __init__(self, assigned_jobs: list[AssignedJob], stop_job_ids: list[str]) -> None:
         self.assigned_jobs = assigned_jobs
+        # stop_job_ids are jobs this worker should cooperatively stop
+        # (cancellation or preemption — Phase 7). Only IDs, since the
+        # worker already has each job's details from assigned_jobs — see
+        # worker_service.proto's WorkerHeartbeatResponse.stop_job_ids.
+        self.stop_job_ids = stop_job_ids
 
 
 class WorkerClient:
@@ -100,7 +105,7 @@ class WorkerClient:
             AssignedJob(job_id=j.id, command=list(j.command), timeout_seconds=j.timeout_seconds)
             for j in response.assigned_jobs
         ]
-        return HeartbeatResult(assigned_jobs=assigned)
+        return HeartbeatResult(assigned_jobs=assigned, stop_job_ids=list(response.stop_job_ids))
 
     def report_started(self, job_id: str, worker_id: str) -> None:
         self._job_stub.ReportJobStarted(
@@ -119,6 +124,18 @@ class WorkerClient:
             job_service_pb2.ReportJobFailedRequest(
                 job_id=job_id, worker_id=worker_id, failure_reason=failure_reason
             )
+        )
+
+    def report_stopped(self, job_id: str, worker_id: str) -> None:
+        """Confirms a job's execution was cooperatively stopped in
+        response to a stop signal (see HeartbeatResult.stop_job_ids). The
+        server decides what this means (cancellation reaching terminal
+        CANCELLED, or a preemption requeue to QUEUED) based on the job's
+        own current state — this client, like main.py, doesn't need to
+        know or care which.
+        """
+        self._job_stub.ReportJobStopped(
+            job_service_pb2.ReportJobStoppedRequest(job_id=job_id, worker_id=worker_id)
         )
 
 

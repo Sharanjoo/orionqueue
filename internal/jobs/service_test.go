@@ -149,7 +149,7 @@ func TestServiceCancelIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestServiceCancelRunningJobIsRejectedForNow(t *testing.T) {
+func TestServiceCancelRunningJobMovesToCancelRequested(t *testing.T) {
 	svc, repo := newTestService()
 	job, err := svc.Submit(context.Background(), validSubmitInput())
 	if err != nil {
@@ -162,9 +162,314 @@ func TestServiceCancelRunningJobIsRejectedForNow(t *testing.T) {
 		t.Fatalf("test setup: failed to force job into RUNNING: %v", err)
 	}
 
-	_, err = svc.Cancel(context.Background(), job.ID)
+	got, err := svc.Cancel(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("Cancel returned error: %v", err)
+	}
+	if got.State != StateCancelRequested {
+		t.Errorf("State = %q, want %q", got.State, StateCancelRequested)
+	}
+	// Not terminal yet — nothing has actually stopped the worker's
+	// execution. CompletedAt is only set once ReportStopped confirms it.
+	if got.CompletedAt != nil {
+		t.Error("expected CompletedAt to remain unset for CANCEL_REQUESTED")
+	}
+}
+
+func TestServiceCancelCheckpointingJobMovesToCancelRequested(t *testing.T) {
+	svc, repo := newTestService()
+	job, err := svc.Submit(context.Background(), validSubmitInput())
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if _, err := repo.Update(context.Background(), job.ID, func(j Job) (Job, error) {
+		j.State = StateCheckpointing
+		return j, nil
+	}); err != nil {
+		t.Fatalf("test setup: failed to force job into CHECKPOINTING: %v", err)
+	}
+
+	got, err := svc.Cancel(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("Cancel returned error: %v", err)
+	}
+	if got.State != StateCancelRequested {
+		t.Errorf("State = %q, want %q", got.State, StateCancelRequested)
+	}
+}
+
+func TestServiceCancelOnAlreadyCancelRequestedJobIsIdempotentNoOp(t *testing.T) {
+	svc, repo := newTestService()
+	job, err := svc.Submit(context.Background(), validSubmitInput())
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if _, err := repo.Update(context.Background(), job.ID, func(j Job) (Job, error) {
+		j.State = StateCancelRequested
+		return j, nil
+	}); err != nil {
+		t.Fatalf("test setup: failed to force job into CANCEL_REQUESTED: %v", err)
+	}
+
+	got, err := svc.Cancel(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("Cancel returned error: %v", err)
+	}
+	if got.State != StateCancelRequested {
+		t.Errorf("State = %q, want unchanged %q", got.State, StateCancelRequested)
+	}
+}
+
+func TestServiceListStoppableForWorkerReturnsCancelRequestedAndPreempted(t *testing.T) {
+	svc, repo := newTestService()
+	cancelled, err := svc.Submit(context.Background(), validSubmitInput())
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	preempted, err := svc.Submit(context.Background(), validSubmitInput())
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	running, err := svc.Submit(context.Background(), validSubmitInput())
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	for id, state := range map[string]State{
+		cancelled.ID: StateCancelRequested,
+		preempted.ID: StatePreempted,
+		running.ID:   StateRunning,
+	} {
+		if _, err := repo.Update(context.Background(), id, func(j Job) (Job, error) {
+			j.State = state
+			j.AssignedWorkerIDs = []string{"worker-1"}
+			return j, nil
+		}); err != nil {
+			t.Fatalf("test setup: failed to set state for %s: %v", id, err)
+		}
+	}
+
+	got, err := svc.ListStoppableForWorker(context.Background(), "worker-1")
+	if err != nil {
+		t.Fatalf("ListStoppableForWorker returned error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 stoppable jobs, got %d", len(got))
+	}
+	ids := map[string]bool{got[0].ID: true, got[1].ID: true}
+	if !ids[cancelled.ID] || !ids[preempted.ID] {
+		t.Errorf("expected exactly the CANCEL_REQUESTED and PREEMPTED jobs, got %v", got)
+	}
+}
+
+func TestServiceListStoppableForWorkerFiltersByWorkerID(t *testing.T) {
+	svc, repo := newTestService()
+	job, err := svc.Submit(context.Background(), validSubmitInput())
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if _, err := repo.Update(context.Background(), job.ID, func(j Job) (Job, error) {
+		j.State = StateCancelRequested
+		j.AssignedWorkerIDs = []string{"worker-other"}
+		return j, nil
+	}); err != nil {
+		t.Fatalf("test setup failed: %v", err)
+	}
+
+	got, err := svc.ListStoppableForWorker(context.Background(), "worker-1")
+	if err != nil {
+		t.Fatalf("ListStoppableForWorker returned error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected 0 stoppable jobs for worker-1, got %d", len(got))
+	}
+}
+
+func TestServiceReportStoppedOnCancelRequestedReachesCancelled(t *testing.T) {
+	svc, repo := newTestService()
+	job, err := svc.Submit(context.Background(), validSubmitInput())
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if _, err := repo.Update(context.Background(), job.ID, func(j Job) (Job, error) {
+		j.State = StateCancelRequested
+		return j, nil
+	}); err != nil {
+		t.Fatalf("test setup failed: %v", err)
+	}
+
+	got, err := svc.ReportStopped(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("ReportStopped returned error: %v", err)
+	}
+	if got.State != StateCancelled {
+		t.Errorf("State = %q, want %q", got.State, StateCancelled)
+	}
+	if got.CompletedAt == nil {
+		t.Error("expected CompletedAt to be set")
+	}
+}
+
+func TestServiceReportStoppedOnPreemptedRequeues(t *testing.T) {
+	svc, repo := newTestService()
+	job, err := svc.Submit(context.Background(), validSubmitInput())
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	startedAt := time.Now()
+	if _, err := repo.Update(context.Background(), job.ID, func(j Job) (Job, error) {
+		j.State = StatePreempted
+		j.CurrentAttempt = 1
+		j.StartedAt = &startedAt
+		j.AssignedWorkerIDs = []string{"worker-1"}
+		return j, nil
+	}); err != nil {
+		t.Fatalf("test setup failed: %v", err)
+	}
+
+	got, err := svc.ReportStopped(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("ReportStopped returned error: %v", err)
+	}
+	if got.State != StateQueued {
+		t.Errorf("State = %q, want %q", got.State, StateQueued)
+	}
+	if got.CurrentAttempt != 1 {
+		t.Errorf("CurrentAttempt = %d, want unchanged 1 (preemption must not count against RetryLimit)", got.CurrentAttempt)
+	}
+	if got.StartedAt != nil {
+		t.Error("expected StartedAt to be cleared")
+	}
+	if len(got.AssignedWorkerIDs) != 0 {
+		t.Error("expected AssignedWorkerIDs to be cleared")
+	}
+}
+
+func TestServiceReportStoppedOnOtherStateIsNoOp(t *testing.T) {
+	svc, _ := newTestService()
+	job, err := svc.Submit(context.Background(), validSubmitInput())
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	// Job is QUEUED (never sent a stop signal) — a stray/duplicate
+	// ReportJobStopped call must not corrupt it.
+	got, err := svc.ReportStopped(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("ReportStopped returned error: %v", err)
+	}
+	if got.State != StateQueued {
+		t.Errorf("State = %q, want unchanged %q", got.State, StateQueued)
+	}
+}
+
+func TestServicePreemptRequiresRunning(t *testing.T) {
+	svc, _ := newTestService()
+	job, err := svc.Submit(context.Background(), validSubmitInput())
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	_, err = svc.Preempt(context.Background(), job.ID, "testing")
 	if !errors.Is(err, ErrInvalidState) {
-		t.Fatalf("expected ErrInvalidState for cancelling a RUNNING job (Phase 7 territory), got %v", err)
+		t.Fatalf("expected ErrInvalidState preempting a QUEUED job, got %v", err)
+	}
+}
+
+func TestServicePreemptRejectsNonPreemptibleJob(t *testing.T) {
+	svc, repo := newTestService()
+	in := validSubmitInput()
+	in.Preemptible = false
+	job, err := svc.Submit(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if _, err := repo.Update(context.Background(), job.ID, func(j Job) (Job, error) {
+		j.State = StateRunning
+		return j, nil
+	}); err != nil {
+		t.Fatalf("test setup failed: %v", err)
+	}
+
+	_, err = svc.Preempt(context.Background(), job.ID, "testing")
+	if !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("expected ErrInvalidState preempting a non-preemptible job, got %v", err)
+	}
+}
+
+func TestServicePreemptMovesRunningPreemptibleJobToPreempted(t *testing.T) {
+	svc, repo := newTestService()
+	in := validSubmitInput()
+	in.Preemptible = true
+	job, err := svc.Submit(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if _, err := repo.Update(context.Background(), job.ID, func(j Job) (Job, error) {
+		j.State = StateRunning
+		return j, nil
+	}); err != nil {
+		t.Fatalf("test setup failed: %v", err)
+	}
+
+	got, err := svc.Preempt(context.Background(), job.ID, "freeing resources for job-x")
+	if err != nil {
+		t.Fatalf("Preempt returned error: %v", err)
+	}
+	if got.State != StatePreempted {
+		t.Errorf("State = %q, want %q", got.State, StatePreempted)
+	}
+	if got.FailureReason != "freeing resources for job-x" {
+		t.Errorf("FailureReason = %q, want the preemption reason", got.FailureReason)
+	}
+}
+
+func TestServiceLoseWorkerFinalizesCancelRequestedAndPreempted(t *testing.T) {
+	svc, repo := newTestService()
+	cancelling, err := svc.Submit(context.Background(), validSubmitInput())
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	preempting, err := svc.Submit(context.Background(), validSubmitInput())
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	for id, state := range map[string]State{
+		cancelling.ID: StateCancelRequested,
+		preempting.ID: StatePreempted,
+	} {
+		if _, err := repo.Update(context.Background(), id, func(j Job) (Job, error) {
+			j.State = state
+			j.CurrentAttempt = 1
+			j.AssignedWorkerIDs = []string{"worker-lost"}
+			return j, nil
+		}); err != nil {
+			t.Fatalf("test setup failed for %s: %v", id, err)
+		}
+	}
+
+	recovered, err := svc.LoseWorker(context.Background(), "worker-lost")
+	if err != nil {
+		t.Fatalf("LoseWorker returned error: %v", err)
+	}
+	if recovered != 2 {
+		t.Fatalf("recovered = %d, want 2", recovered)
+	}
+
+	got, err := svc.Get(context.Background(), cancelling.ID)
+	if err != nil {
+		t.Fatalf("Get returned error: %v", err)
+	}
+	if got.State != StateCancelled {
+		t.Errorf("CANCEL_REQUESTED job's State = %q, want %q after its worker was lost", got.State, StateCancelled)
+	}
+
+	got, err = svc.Get(context.Background(), preempting.ID)
+	if err != nil {
+		t.Fatalf("Get returned error: %v", err)
+	}
+	if got.State != StateQueued {
+		t.Errorf("PREEMPTED job's State = %q, want %q after its worker was lost", got.State, StateQueued)
+	}
+	if got.CurrentAttempt != 1 {
+		t.Errorf("CurrentAttempt = %d, want unchanged 1", got.CurrentAttempt)
 	}
 }
 

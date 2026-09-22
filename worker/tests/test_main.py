@@ -12,7 +12,18 @@ from agent.logging_setup import configure
 class _FakeRpcError(grpc.RpcError):
     """A minimal stand-in for a real grpc.RpcError, used to test
     main.py's retry/error-handling paths without a live gRPC server.
+    `code`, if given, lets a test exercise main.py's
+    exc.code() == grpc.StatusCode.FAILED_PRECONDITION branch specifically
+    (see _start_job's report_started handling); defaults to something
+    else so existing tests that never call .code() are unaffected.
     """
+
+    def __init__(self, message: str = "", code: grpc.StatusCode = grpc.StatusCode.UNAVAILABLE):
+        super().__init__(message)
+        self._code = code
+
+    def code(self) -> grpc.StatusCode:
+        return self._code
 
 
 class _FakeWorkerClient:
@@ -43,6 +54,11 @@ class _FakeWorkerClient:
         self.started_calls: list[tuple[str, str]] = []
         self.completed_calls: list[tuple[str, str, int]] = []
         self.failed_calls: list[tuple[str, str, str]] = []
+        self.stopped_calls: list[tuple[str, str]] = []
+        # Called (if set) with job_id from inside report_started, before
+        # it's recorded — lets a test make report_started raise, e.g. to
+        # simulate the server rejecting it (see FAILED_PRECONDITION tests).
+        self.report_started_side_effect = None
 
     def register(self, **kwargs):
         self.register_calls += 1
@@ -59,9 +75,11 @@ class _FakeWorkerClient:
         if self.heartbeat_side_effect is not None:
             self.heartbeat_side_effect(worker_id)
         jobs, self._pending_assigned_jobs = self._pending_assigned_jobs, []
-        return HeartbeatResult(assigned_jobs=jobs)
+        return HeartbeatResult(assigned_jobs=jobs, stop_job_ids=[])
 
     def report_started(self, job_id, worker_id):
+        if self.report_started_side_effect is not None:
+            self.report_started_side_effect(job_id)
         self.started_calls.append((job_id, worker_id))
 
     def report_completed(self, job_id, worker_id, exit_code=0):
@@ -69,6 +87,9 @@ class _FakeWorkerClient:
 
     def report_failed(self, job_id, worker_id, failure_reason):
         self.failed_calls.append((job_id, worker_id, failure_reason))
+
+    def report_stopped(self, job_id, worker_id):
+        self.stopped_calls.append((job_id, worker_id))
 
     def close(self):
         pass
@@ -105,7 +126,45 @@ class _StickyAssignmentClient(_FakeWorkerClient):
         if call_n >= self._stop_after_calls:
             self._shutdown_state["value"] = True
         jobs = [self._job] if call_n <= self._offer_for_calls else []
-        return HeartbeatResult(assigned_jobs=jobs)
+        return HeartbeatResult(assigned_jobs=jobs, stop_job_ids=[])
+
+
+class _StopSignalClient(_FakeWorkerClient):
+    """Offers `job` once (on the first heartbeat), then delivers a stop
+    signal for it (stop_job_ids) starting from the `stop_from_call`-th
+    heartbeat onward, stopping the run loop after `stop_after_calls`
+    heartbeats. Used to test that a stop signal delivered mid-execution
+    actually interrupts a running job's executor thread — see
+    executors.fake.run()'s should_stop hook and main.py's cancel_events.
+    """
+
+    def __init__(
+        self,
+        job: AssignedJob,
+        shutdown_state: dict,
+        stop_from_call: int,
+        stop_after_calls: int,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self._job = job
+        self._shutdown_state = shutdown_state
+        self._stop_from_call = stop_from_call
+        self._stop_after_calls = stop_after_calls
+
+    def heartbeat(self, worker_id, gpus, running_job_ids):
+        self.heartbeat_calls.append(worker_id)
+        self.running_job_ids_by_call.append(list(running_job_ids))
+        call_n = len(self.heartbeat_calls)
+        if call_n >= self._stop_after_calls:
+            self._shutdown_state["value"] = True
+        jobs = [self._job] if call_n == 1 else []
+        stop_ids = [self._job.job_id] if call_n >= self._stop_from_call else []
+        return HeartbeatResult(assigned_jobs=jobs, stop_job_ids=stop_ids)
+
+
+def _raise_failed_precondition(job_id: str) -> None:
+    raise _FakeRpcError("job is not SCHEDULED", code=grpc.StatusCode.FAILED_PRECONDITION)
 
 
 def _test_logger():
@@ -203,7 +262,7 @@ def test_run_continues_after_a_heartbeat_failure(monkeypatch):
         if len(attempts) == 1:
             raise _FakeRpcError("transient network error")
         state["value"] = True
-        return HeartbeatResult(assigned_jobs=[])
+        return HeartbeatResult(assigned_jobs=[], stop_job_ids=[])
 
     client.heartbeat = heartbeat_with_flakiness
 
@@ -327,3 +386,56 @@ def test_run_includes_started_job_in_later_running_job_ids(monkeypatch):
     assert client.running_job_ids_by_call[0] == []  # job not yet assigned before first heartbeat
     assert client.running_job_ids_by_call[1] == ["job-4"]  # started right after first heartbeat
     assert client.running_job_ids_by_call[2] == ["job-4"]  # still running
+
+
+def test_run_stops_a_running_job_when_stop_signal_is_delivered(monkeypatch):
+    state = {"value": False}
+    monkeypatch.setattr(main_module, "_install_signal_handlers", lambda logger: state)
+    monkeypatch.setattr(
+        main_module,
+        "_register_with_retry",
+        lambda cfg, logger, client, gpus, state: ("worker-fake-1", 0.05),
+    )
+
+    # A job that would run for ~5s unless actually interrupted by the
+    # stop signal well before then.
+    job = AssignedJob(
+        job_id="job-5", command=["--steps=100", "--step-seconds=0.05"], timeout_seconds=0
+    )
+    client = _StopSignalClient(
+        job, state, stop_from_call=2, stop_after_calls=6, heartbeat_interval_seconds=0.05
+    )
+
+    exit_code = main_module.run(load(), _test_logger(), client, [])
+
+    assert exit_code == 0
+    assert _wait_until(lambda: client.stopped_calls)
+    assert client.stopped_calls == [("job-5", "worker-fake-1")]
+    assert client.completed_calls == []
+    assert client.failed_calls == []
+
+
+def test_run_does_not_execute_a_job_whose_report_started_is_rejected(monkeypatch):
+    state = {"value": False}
+    monkeypatch.setattr(main_module, "_install_signal_handlers", lambda logger: state)
+
+    # A job that would take a long time if it were ever actually executed
+    # — proving it never ran is the point of this test.
+    job = AssignedJob(
+        job_id="job-6", command=["--steps=100", "--step-seconds=1"], timeout_seconds=0
+    )
+    client = _StickyAssignmentClient(
+        job, state, offer_for_calls=1, stop_after_calls=2, heartbeat_interval_seconds=0.05
+    )
+    client.report_started_side_effect = _raise_failed_precondition
+
+    exit_code = main_module.run(load(), _test_logger(), client, [])
+
+    assert exit_code == 0
+    # Nothing to poll for (a job that's never executed reports nothing) —
+    # a short fixed wait gives the background thread a chance to run its
+    # early-return path before asserting it did nothing further.
+    time.sleep(0.2)
+    assert client.completed_calls == []
+    assert client.failed_calls == []
+    assert client.stopped_calls == []

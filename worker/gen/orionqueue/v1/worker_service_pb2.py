@@ -27,7 +27,7 @@ from orionqueue.v1 import job_pb2 as orionqueue_dot_v1_dot_job__pb2
 from orionqueue.v1 import worker_pb2 as orionqueue_dot_v1_dot_worker__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\"orionqueue/v1/worker_service.proto\x12\rorionqueue.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x17orionqueue/v1/job.proto\x1a\x1aorionqueue/v1/worker.proto\"\x8b\x02\n\x15RegisterWorkerRequest\x12\x10\n\x08hostname\x18\x01 \x01(\t\x12\x14\n\x0c\x63pu_capacity\x18\x02 \x01(\x01\x12\x1d\n\x15memory_capacity_bytes\x18\x03 \x01(\x03\x12 \n\x04gpus\x18\x04 \x03(\x0b\x32\x12.orionqueue.v1.GPU\x12\x18\n\x10software_version\x18\x05 \x01(\t\x12@\n\x06labels\x18\x06 \x03(\x0b\x32\x30.orionqueue.v1.RegisterWorkerRequest.LabelsEntry\x1a-\n\x0bLabelsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"c\n\x16RegisterWorkerResponse\x12%\n\x06worker\x18\x01 \x01(\x0b\x32\x15.orionqueue.v1.Worker\x12\"\n\x1aheartbeat_interval_seconds\x18\x02 \x01(\x03\"f\n\x16WorkerHeartbeatRequest\x12\x11\n\tworker_id\x18\x01 \x01(\t\x12 \n\x04gpus\x18\x02 \x03(\x0b\x32\x12.orionqueue.v1.GPU\x12\x17\n\x0frunning_job_ids\x18\x03 \x03(\t\"k\n\x17WorkerHeartbeatResponse\x12%\n\x06worker\x18\x01 \x01(\x0b\x32\x15.orionqueue.v1.Worker\x12)\n\rassigned_jobs\x18\x02 \x03(\x0b\x32\x12.orionqueue.v1.Job\"o\n\x12ListWorkersRequest\x12\x11\n\tpage_size\x18\x01 \x01(\x05\x12\x12\n\npage_token\x18\x02 \x01(\t\x12\x32\n\rstatus_filter\x18\x03 \x01(\x0e\x32\x1b.orionqueue.v1.WorkerStatus\"V\n\x13ListWorkersResponse\x12&\n\x07workers\x18\x01 \x03(\x0b\x32\x15.orionqueue.v1.Worker\x12\x17\n\x0fnext_page_token\x18\x02 \x01(\t2\xbf\x02\n\rWorkerService\x12]\n\x0eRegisterWorker\x12$.orionqueue.v1.RegisterWorkerRequest\x1a%.orionqueue.v1.RegisterWorkerResponse\x12`\n\x0fWorkerHeartbeat\x12%.orionqueue.v1.WorkerHeartbeatRequest\x1a&.orionqueue.v1.WorkerHeartbeatResponse\x12m\n\x0bListWorkers\x12!.orionqueue.v1.ListWorkersRequest\x1a\".orionqueue.v1.ListWorkersResponse\"\x17\x82\xd3\xe4\x93\x02\x11\x12\x0f/api/v1/workersBMZKgithub.com/Sharanjoo/orionqueue/internal/api/gen/orionqueue/v1;orionqueuev1b\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\"orionqueue/v1/worker_service.proto\x12\rorionqueue.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x17orionqueue/v1/job.proto\x1a\x1aorionqueue/v1/worker.proto\"\x8b\x02\n\x15RegisterWorkerRequest\x12\x10\n\x08hostname\x18\x01 \x01(\t\x12\x14\n\x0c\x63pu_capacity\x18\x02 \x01(\x01\x12\x1d\n\x15memory_capacity_bytes\x18\x03 \x01(\x03\x12 \n\x04gpus\x18\x04 \x03(\x0b\x32\x12.orionqueue.v1.GPU\x12\x18\n\x10software_version\x18\x05 \x01(\t\x12@\n\x06labels\x18\x06 \x03(\x0b\x32\x30.orionqueue.v1.RegisterWorkerRequest.LabelsEntry\x1a-\n\x0bLabelsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"c\n\x16RegisterWorkerResponse\x12%\n\x06worker\x18\x01 \x01(\x0b\x32\x15.orionqueue.v1.Worker\x12\"\n\x1aheartbeat_interval_seconds\x18\x02 \x01(\x03\"f\n\x16WorkerHeartbeatRequest\x12\x11\n\tworker_id\x18\x01 \x01(\t\x12 \n\x04gpus\x18\x02 \x03(\x0b\x32\x12.orionqueue.v1.GPU\x12\x17\n\x0frunning_job_ids\x18\x03 \x03(\t\"\x81\x01\n\x17WorkerHeartbeatResponse\x12%\n\x06worker\x18\x01 \x01(\x0b\x32\x15.orionqueue.v1.Worker\x12)\n\rassigned_jobs\x18\x02 \x03(\x0b\x32\x12.orionqueue.v1.Job\x12\x14\n\x0cstop_job_ids\x18\x03 \x03(\t\"o\n\x12ListWorkersRequest\x12\x11\n\tpage_size\x18\x01 \x01(\x05\x12\x12\n\npage_token\x18\x02 \x01(\t\x12\x32\n\rstatus_filter\x18\x03 \x01(\x0e\x32\x1b.orionqueue.v1.WorkerStatus\"V\n\x13ListWorkersResponse\x12&\n\x07workers\x18\x01 \x03(\x0b\x32\x15.orionqueue.v1.Worker\x12\x17\n\x0fnext_page_token\x18\x02 \x01(\t2\xbf\x02\n\rWorkerService\x12]\n\x0eRegisterWorker\x12$.orionqueue.v1.RegisterWorkerRequest\x1a%.orionqueue.v1.RegisterWorkerResponse\x12`\n\x0fWorkerHeartbeat\x12%.orionqueue.v1.WorkerHeartbeatRequest\x1a&.orionqueue.v1.WorkerHeartbeatResponse\x12m\n\x0bListWorkers\x12!.orionqueue.v1.ListWorkersRequest\x1a\".orionqueue.v1.ListWorkersResponse\"\x17\x82\xd3\xe4\x93\x02\x11\x12\x0f/api/v1/workersBMZKgithub.com/Sharanjoo/orionqueue/internal/api/gen/orionqueue/v1;orionqueuev1b\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -47,12 +47,12 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_REGISTERWORKERRESPONSE']._serialized_end=505
   _globals['_WORKERHEARTBEATREQUEST']._serialized_start=507
   _globals['_WORKERHEARTBEATREQUEST']._serialized_end=609
-  _globals['_WORKERHEARTBEATRESPONSE']._serialized_start=611
-  _globals['_WORKERHEARTBEATRESPONSE']._serialized_end=718
-  _globals['_LISTWORKERSREQUEST']._serialized_start=720
-  _globals['_LISTWORKERSREQUEST']._serialized_end=831
-  _globals['_LISTWORKERSRESPONSE']._serialized_start=833
-  _globals['_LISTWORKERSRESPONSE']._serialized_end=919
-  _globals['_WORKERSERVICE']._serialized_start=922
-  _globals['_WORKERSERVICE']._serialized_end=1241
+  _globals['_WORKERHEARTBEATRESPONSE']._serialized_start=612
+  _globals['_WORKERHEARTBEATRESPONSE']._serialized_end=741
+  _globals['_LISTWORKERSREQUEST']._serialized_start=743
+  _globals['_LISTWORKERSREQUEST']._serialized_end=854
+  _globals['_LISTWORKERSRESPONSE']._serialized_start=856
+  _globals['_LISTWORKERSRESPONSE']._serialized_end=942
+  _globals['_WORKERSERVICE']._serialized_start=945
+  _globals['_WORKERSERVICE']._serialized_end=1264
 # @@protoc_insertion_point(module_scope)

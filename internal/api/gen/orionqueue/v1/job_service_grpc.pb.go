@@ -27,6 +27,7 @@ const (
 	JobService_ReportJobStarted_FullMethodName   = "/orionqueue.v1.JobService/ReportJobStarted"
 	JobService_ReportJobCompleted_FullMethodName = "/orionqueue.v1.JobService/ReportJobCompleted"
 	JobService_ReportJobFailed_FullMethodName    = "/orionqueue.v1.JobService/ReportJobFailed"
+	JobService_ReportJobStopped_FullMethodName   = "/orionqueue.v1.JobService/ReportJobStopped"
 )
 
 // JobServiceClient is the client API for JobService service.
@@ -35,9 +36,10 @@ const (
 //
 // JobService is OrionQueue's job submission and management API. Phase 2
 // scope: SubmitJob, GetJob, ListJobs, CancelJob, RetryJob. Phase 6 adds
-// ReportJobStarted/Completed/Failed. WatchJob (streaming job events) is
-// added once job_events history is exposed through the API — the table
-// itself has existed since Phase 3.
+// ReportJobStarted/Completed/Failed. Phase 7 adds ReportJobStopped and
+// makes CancelJob able to reach a RUNNING job (previously rejected).
+// WatchJob (streaming job events) is added once job_events history is
+// exposed through the API — the table itself has existed since Phase 3.
 type JobServiceClient interface {
 	SubmitJob(ctx context.Context, in *SubmitJobRequest, opts ...grpc.CallOption) (*SubmitJobResponse, error)
 	GetJob(ctx context.Context, in *GetJobRequest, opts ...grpc.CallOption) (*GetJobResponse, error)
@@ -47,6 +49,7 @@ type JobServiceClient interface {
 	ReportJobStarted(ctx context.Context, in *ReportJobStartedRequest, opts ...grpc.CallOption) (*ReportJobStartedResponse, error)
 	ReportJobCompleted(ctx context.Context, in *ReportJobCompletedRequest, opts ...grpc.CallOption) (*ReportJobCompletedResponse, error)
 	ReportJobFailed(ctx context.Context, in *ReportJobFailedRequest, opts ...grpc.CallOption) (*ReportJobFailedResponse, error)
+	ReportJobStopped(ctx context.Context, in *ReportJobStoppedRequest, opts ...grpc.CallOption) (*ReportJobStoppedResponse, error)
 }
 
 type jobServiceClient struct {
@@ -137,15 +140,26 @@ func (c *jobServiceClient) ReportJobFailed(ctx context.Context, in *ReportJobFai
 	return out, nil
 }
 
+func (c *jobServiceClient) ReportJobStopped(ctx context.Context, in *ReportJobStoppedRequest, opts ...grpc.CallOption) (*ReportJobStoppedResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReportJobStoppedResponse)
+	err := c.cc.Invoke(ctx, JobService_ReportJobStopped_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // JobServiceServer is the server API for JobService service.
 // All implementations must embed UnimplementedJobServiceServer
 // for forward compatibility.
 //
 // JobService is OrionQueue's job submission and management API. Phase 2
 // scope: SubmitJob, GetJob, ListJobs, CancelJob, RetryJob. Phase 6 adds
-// ReportJobStarted/Completed/Failed. WatchJob (streaming job events) is
-// added once job_events history is exposed through the API — the table
-// itself has existed since Phase 3.
+// ReportJobStarted/Completed/Failed. Phase 7 adds ReportJobStopped and
+// makes CancelJob able to reach a RUNNING job (previously rejected).
+// WatchJob (streaming job events) is added once job_events history is
+// exposed through the API — the table itself has existed since Phase 3.
 type JobServiceServer interface {
 	SubmitJob(context.Context, *SubmitJobRequest) (*SubmitJobResponse, error)
 	GetJob(context.Context, *GetJobRequest) (*GetJobResponse, error)
@@ -155,6 +169,7 @@ type JobServiceServer interface {
 	ReportJobStarted(context.Context, *ReportJobStartedRequest) (*ReportJobStartedResponse, error)
 	ReportJobCompleted(context.Context, *ReportJobCompletedRequest) (*ReportJobCompletedResponse, error)
 	ReportJobFailed(context.Context, *ReportJobFailedRequest) (*ReportJobFailedResponse, error)
+	ReportJobStopped(context.Context, *ReportJobStoppedRequest) (*ReportJobStoppedResponse, error)
 	mustEmbedUnimplementedJobServiceServer()
 }
 
@@ -188,6 +203,9 @@ func (UnimplementedJobServiceServer) ReportJobCompleted(context.Context, *Report
 }
 func (UnimplementedJobServiceServer) ReportJobFailed(context.Context, *ReportJobFailedRequest) (*ReportJobFailedResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ReportJobFailed not implemented")
+}
+func (UnimplementedJobServiceServer) ReportJobStopped(context.Context, *ReportJobStoppedRequest) (*ReportJobStoppedResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReportJobStopped not implemented")
 }
 func (UnimplementedJobServiceServer) mustEmbedUnimplementedJobServiceServer() {}
 func (UnimplementedJobServiceServer) testEmbeddedByValue()                    {}
@@ -354,6 +372,24 @@ func _JobService_ReportJobFailed_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _JobService_ReportJobStopped_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReportJobStoppedRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(JobServiceServer).ReportJobStopped(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: JobService_ReportJobStopped_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(JobServiceServer).ReportJobStopped(ctx, req.(*ReportJobStoppedRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // JobService_ServiceDesc is the grpc.ServiceDesc for JobService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -392,6 +428,10 @@ var JobService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ReportJobFailed",
 			Handler:    _JobService_ReportJobFailed_Handler,
+		},
+		{
+			MethodName: "ReportJobStopped",
+			Handler:    _JobService_ReportJobStopped_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

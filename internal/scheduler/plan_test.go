@@ -48,6 +48,26 @@ func assignmentFor(t *testing.T, assignments []Assignment, jobID string) (Assign
 	return Assignment{}, false
 }
 
+// runningJob returns a RUNNING job assigned to workerID, for
+// PlanPreemptions tests.
+func runningJob(id string, priority int32, preemptible bool, gpuCount uint32, cpu float64, mem int64, workerID string) jobs.Job {
+	j := queuedJob(id, priority, gpuCount, 0, cpu, mem)
+	j.State = jobs.StateRunning
+	j.Preemptible = preemptible
+	j.AssignedWorkerIDs = []string{workerID}
+	return j
+}
+
+func preemptionFor(t *testing.T, preemptions []Preemption, jobID string) (Preemption, bool) {
+	t.Helper()
+	for _, p := range preemptions {
+		if p.JobID == jobID {
+			return p, true
+		}
+	}
+	return Preemption{}, false
+}
+
 func TestPlanAssignsAJobToAnEligibleWorker(t *testing.T) {
 	job := queuedJob("job-1", 50, 1, 8<<30, 2, 4<<30)
 	worker := activeWorker("worker-1", 8, 32<<30, 16<<30)
@@ -302,5 +322,126 @@ func TestEffectivePriorityHandlesFutureCreatedAtGracefully(t *testing.T) {
 	p := EffectivePriority(50, baseTime.Add(time.Hour), baseTime)
 	if p != 50 {
 		t.Errorf("EffectivePriority = %d, want 50 (createdAt in the future relative to now)", p)
+	}
+}
+
+func TestPlanPreemptionsPreemptsLowerPriorityRunningJobToFitPending(t *testing.T) {
+	pending := queuedJob("job-pending", 90, 1, 0, 2, 1<<30)
+	running := runningJob("job-running", 10, true, 1, 2, 1<<30, "worker-1")
+	worker := activeWorker("worker-1", 2, 1<<30, 8<<30) // fully committed by job-running
+
+	active := []jobs.Job{pending, running}
+	preemptions := PlanPreemptions(active, []workers.Worker{worker}, nil, baseTime)
+
+	p, ok := preemptionFor(t, preemptions, "job-running")
+	if !ok {
+		t.Fatal("expected job-running to be preempted")
+	}
+	if p.WorkerID != "worker-1" {
+		t.Errorf("WorkerID = %q, want %q", p.WorkerID, "worker-1")
+	}
+}
+
+func TestPlanPreemptionsNeverPreemptsNonPreemptibleJob(t *testing.T) {
+	pending := queuedJob("job-pending", 90, 1, 0, 2, 1<<30)
+	running := runningJob("job-running", 10, false, 1, 2, 1<<30, "worker-1") // preemptible=false
+	worker := activeWorker("worker-1", 2, 1<<30, 8<<30)
+
+	active := []jobs.Job{pending, running}
+	preemptions := PlanPreemptions(active, []workers.Worker{worker}, nil, baseTime)
+
+	if _, ok := preemptionFor(t, preemptions, "job-running"); ok {
+		t.Fatal("expected job-running to never be preempted (not preemptible)")
+	}
+}
+
+func TestPlanPreemptionsNeverPreemptsEqualOrHigherPriorityJob(t *testing.T) {
+	pending := queuedJob("job-pending", 50, 1, 0, 2, 1<<30)
+	sameLevel := runningJob("job-same", 50, true, 1, 2, 1<<30, "worker-1")
+	higher := runningJob("job-higher", 90, true, 1, 2, 1<<30, "worker-2")
+	workerA := activeWorker("worker-1", 2, 1<<30, 8<<30)
+	workerB := activeWorker("worker-2", 2, 1<<30, 8<<30)
+
+	active := []jobs.Job{pending, sameLevel, higher}
+	preemptions := PlanPreemptions(active, []workers.Worker{workerA, workerB}, nil, baseTime)
+
+	if len(preemptions) != 0 {
+		t.Fatalf("expected no preemptions (only equal/higher priority running jobs available), got %v", preemptions)
+	}
+}
+
+func TestPlanPreemptionsStopsAtMinimumSetNeeded(t *testing.T) {
+	// Worker has room for 4 GPUs total; two low-priority jobs each hold 1
+	// GPU (2 committed, 2 free already). The pending job needs 1 more
+	// GPU — preempting just one of the two low-priority jobs is enough,
+	// so the other must be left running.
+	pending := queuedJob("job-pending", 90, 3, 0, 0, 0) // needs 3 GPUs total
+	lowA := runningJob("job-low-a", 10, true, 1, 0, 0, "worker-1")
+	lowB := runningJob("job-low-b", 20, true, 1, 0, 0, "worker-1")
+	worker := activeWorker("worker-1", 100, 100<<30, 8<<30, 8<<30, 8<<30, 8<<30) // 4 GPUs, 2 committed -> 2 free
+
+	active := []jobs.Job{pending, lowA, lowB}
+	preemptions := PlanPreemptions(active, []workers.Worker{worker}, nil, baseTime)
+
+	if len(preemptions) != 1 {
+		t.Fatalf("expected exactly 1 preemption (minimum needed), got %d: %v", len(preemptions), preemptions)
+	}
+	// job-low-a has the lower priority (10 < 20), so it must be the one
+	// chosen, per ADR-0005's "lowest-priority eligible running job(s)".
+	if _, ok := preemptionFor(t, preemptions, "job-low-a"); !ok {
+		t.Errorf("expected job-low-a (lowest priority) to be the one preempted, got %v", preemptions)
+	}
+}
+
+func TestPlanPreemptionsLeavesJobQueuedWhenEvenFullPreemptionIsNotEnough(t *testing.T) {
+	pending := queuedJob("job-pending", 90, 4, 0, 0, 0) // needs 4 GPUs
+	low := runningJob("job-low", 10, true, 1, 0, 0, "worker-1")
+	worker := activeWorker("worker-1", 100, 100<<30, 8<<30) // only 1 GPU total, even after preempting
+
+	active := []jobs.Job{pending, low}
+	preemptions := PlanPreemptions(active, []workers.Worker{worker}, nil, baseTime)
+
+	if len(preemptions) != 0 {
+		t.Fatalf("expected no preemptions (impossible to fit even after preempting everything), got %v", preemptions)
+	}
+}
+
+func TestPlanPreemptionsSkipsJobsAlreadyPlaced(t *testing.T) {
+	placed := queuedJob("job-placed", 90, 1, 0, 0, 0)
+	low := runningJob("job-low", 10, true, 1, 0, 0, "worker-1")
+	worker := activeWorker("worker-1", 100, 100<<30, 8<<30, 8<<30) // 2 GPUs, 1 committed by job-low -> 1 free, enough for job-placed without preempting
+
+	active := []jobs.Job{placed, low}
+	placedAssignments := []Assignment{{JobID: "job-placed", WorkerID: "worker-1"}}
+	preemptions := PlanPreemptions(active, []workers.Worker{worker}, placedAssignments, baseTime)
+
+	if len(preemptions) != 0 {
+		t.Fatalf("expected no preemptions for a job Plan already placed, got %v", preemptions)
+	}
+}
+
+func TestPlanPreemptionsNeverDoubleReusesAPreemptedJobForTwoPendingJobs(t *testing.T) {
+	// Two pending jobs, each needing the one GPU held by a single
+	// low-priority running job. Only one of them can actually benefit —
+	// the other must be left queued rather than "double-spending" the
+	// same freed GPU.
+	pendingA := queuedJob("job-pending-a", 90, 1, 0, 0, 0)
+	pendingB := queuedJob("job-pending-b", 80, 1, 0, 0, 0)
+	low := runningJob("job-low", 10, true, 1, 0, 0, "worker-1")
+	worker := activeWorker("worker-1", 100, 100<<30, 8<<30) // 1 GPU total, fully committed by job-low
+
+	active := []jobs.Job{pendingA, pendingB, low}
+	preemptions := PlanPreemptions(active, []workers.Worker{worker}, nil, baseTime)
+
+	if len(preemptions) != 1 {
+		t.Fatalf("expected exactly 1 preemption total (only 1 GPU worth of capacity exists to free), got %d: %v", len(preemptions), preemptions)
+	}
+}
+
+func TestPlanPreemptionsReturnsNoneWhenNothingQueuedIsUnplaced(t *testing.T) {
+	worker := activeWorker("worker-1", 8, 32<<30, 16<<30)
+	preemptions := PlanPreemptions(nil, []workers.Worker{worker}, nil, baseTime)
+	if len(preemptions) != 0 {
+		t.Fatalf("expected no preemptions with no active jobs, got %v", preemptions)
 	}
 }

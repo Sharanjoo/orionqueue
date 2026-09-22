@@ -45,6 +45,16 @@ class Outcome:
     success: bool
     steps_completed: int
     failure_reason: str = ""
+    # stopped distinguishes a cooperative stop (should_stop returned True —
+    # Phase 7 cancellation/preemption) from a genuine failure
+    # (--fail-at-step or a timeout). Both leave success=False, but the
+    # caller (agent/main.py) needs to know which happened: a genuine
+    # failure is reported via JobService.ReportJobFailed (subject to
+    # retry), while a cooperative stop is reported via
+    # JobService.ReportJobStopped (never retried — the server already
+    # knows why it asked to stop). Always False unless should_stop is what
+    # ended the run.
+    stopped: bool = False
 
 
 def parse_command(command: list[str]) -> Config:
@@ -97,9 +107,10 @@ def run(
     *reporting* to the control plane is Phase 10, once there's a metrics
     pipeline for it to feed). should_stop(), if given, is polled between
     steps (not during a step's sleep) and stops execution early with
-    success=False if it ever returns True — a hook for future graceful
-    cancellation (Phase 7); unused today since nothing calls run() with a
-    should_stop that can actually return True yet.
+    success=False, stopped=True if it ever returns True — this is what
+    agent/main.py wires to a per-job threading.Event so a cooperative
+    cancellation or preemption stop signal (Phase 7) actually interrupts a
+    running fake job instead of letting it run to completion regardless.
 
     timeout_seconds <= 0 means no timeout. The timeout is checked between
     steps, not preemptively during a step's sleep — coarse-grained, but
@@ -112,7 +123,10 @@ def run(
     for step in range(1, cfg.steps + 1):
         if should_stop is not None and should_stop():
             return Outcome(
-                success=False, steps_completed=step - 1, failure_reason="stopped before completion"
+                success=False,
+                steps_completed=step - 1,
+                failure_reason="stopped before completion",
+                stopped=True,
             )
 
         if cfg.fail_at_step is not None and step == cfg.fail_at_step:

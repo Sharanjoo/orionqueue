@@ -39,6 +39,7 @@ def test_run_succeeds_with_no_failure_configured():
     assert outcome.success is True
     assert outcome.steps_completed == 3
     assert outcome.failure_reason == ""
+    assert outcome.stopped is False
 
 
 def test_run_fails_at_the_configured_step():
@@ -46,6 +47,7 @@ def test_run_fails_at_the_configured_step():
     assert outcome.success is False
     assert outcome.steps_completed == 2  # steps 1 and 2 completed; failed entering step 3
     assert "step 3" in outcome.failure_reason
+    assert outcome.stopped is False  # a genuine failure, not a cooperative stop
 
 
 def test_run_is_deterministic_across_repeated_calls():
@@ -76,6 +78,20 @@ def test_run_stops_early_when_should_stop_returns_true():
     assert outcome.success is False
     assert outcome.steps_completed == 0
     assert "stopped" in outcome.failure_reason
+    assert outcome.stopped is True
+
+
+def test_run_should_stop_is_polled_between_steps_not_just_once():
+    calls = {"n": 0}
+
+    def should_stop():
+        calls["n"] += 1
+        return calls["n"] > 2  # let 2 steps run, then stop before the 3rd
+
+    outcome = fake.run(["--steps=5", "--step-seconds=0"], should_stop=should_stop)
+    assert outcome.success is False
+    assert outcome.stopped is True
+    assert outcome.steps_completed == 2
 
 
 def test_run_respects_timeout():

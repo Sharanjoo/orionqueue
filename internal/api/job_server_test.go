@@ -316,3 +316,101 @@ func assertStatusCode(t *testing.T, err error, want codes.Code) {
 		t.Fatalf("status code = %v, want %v (message: %s)", st.Code(), want, st.Message())
 	}
 }
+
+func TestCancelJobOnRunningJobMovesToCancelRequested(t *testing.T) {
+	s := newTestServer()
+	ctx := context.Background()
+
+	submitResp, err := s.SubmitJob(ctx, validSubmitRequest())
+	if err != nil {
+		t.Fatalf("SubmitJob returned error: %v", err)
+	}
+	jobID := submitResp.GetJob().GetId()
+	if _, err := s.svc.AssignToWorkers(ctx, jobID, []string{"worker-1"}); err != nil {
+		t.Fatalf("test setup AssignToWorkers returned error: %v", err)
+	}
+	if _, err := s.ReportJobStarted(ctx, &pb.ReportJobStartedRequest{JobId: jobID, WorkerId: "worker-1"}); err != nil {
+		t.Fatalf("test setup ReportJobStarted returned error: %v", err)
+	}
+
+	cancelResp, err := s.CancelJob(ctx, &pb.CancelJobRequest{Id: jobID})
+	if err != nil {
+		t.Fatalf("CancelJob returned error: %v", err)
+	}
+	if cancelResp.GetJob().GetState() != pb.JobState_JOB_STATE_CANCEL_REQUESTED {
+		t.Errorf("State = %v, want JOB_STATE_CANCEL_REQUESTED", cancelResp.GetJob().GetState())
+	}
+}
+
+func TestReportJobStoppedOnCancelRequestedReachesCancelled(t *testing.T) {
+	s := newTestServer()
+	ctx := context.Background()
+
+	submitResp, err := s.SubmitJob(ctx, validSubmitRequest())
+	if err != nil {
+		t.Fatalf("SubmitJob returned error: %v", err)
+	}
+	jobID := submitResp.GetJob().GetId()
+	if _, err := s.svc.AssignToWorkers(ctx, jobID, []string{"worker-1"}); err != nil {
+		t.Fatalf("test setup AssignToWorkers returned error: %v", err)
+	}
+	if _, err := s.ReportJobStarted(ctx, &pb.ReportJobStartedRequest{JobId: jobID, WorkerId: "worker-1"}); err != nil {
+		t.Fatalf("test setup ReportJobStarted returned error: %v", err)
+	}
+	if _, err := s.CancelJob(ctx, &pb.CancelJobRequest{Id: jobID}); err != nil {
+		t.Fatalf("test setup CancelJob returned error: %v", err)
+	}
+
+	stoppedResp, err := s.ReportJobStopped(ctx, &pb.ReportJobStoppedRequest{JobId: jobID, WorkerId: "worker-1"})
+	if err != nil {
+		t.Fatalf("ReportJobStopped returned error: %v", err)
+	}
+	if stoppedResp.GetJob().GetState() != pb.JobState_JOB_STATE_CANCELLED {
+		t.Errorf("State = %v, want JOB_STATE_CANCELLED", stoppedResp.GetJob().GetState())
+	}
+}
+
+func TestReportJobStoppedOnPreemptedRequeues(t *testing.T) {
+	s := newTestServer()
+	ctx := context.Background()
+
+	req := validSubmitRequest()
+	req.Preemptible = true
+	submitResp, err := s.SubmitJob(ctx, req)
+	if err != nil {
+		t.Fatalf("SubmitJob returned error: %v", err)
+	}
+	jobID := submitResp.GetJob().GetId()
+	if _, err := s.svc.AssignToWorkers(ctx, jobID, []string{"worker-1"}); err != nil {
+		t.Fatalf("test setup AssignToWorkers returned error: %v", err)
+	}
+	if _, err := s.ReportJobStarted(ctx, &pb.ReportJobStartedRequest{JobId: jobID, WorkerId: "worker-1"}); err != nil {
+		t.Fatalf("test setup ReportJobStarted returned error: %v", err)
+	}
+	if _, err := s.svc.Preempt(ctx, jobID, "freeing resources"); err != nil {
+		t.Fatalf("test setup Preempt returned error: %v", err)
+	}
+
+	stoppedResp, err := s.ReportJobStopped(ctx, &pb.ReportJobStoppedRequest{JobId: jobID, WorkerId: "worker-1"})
+	if err != nil {
+		t.Fatalf("ReportJobStopped returned error: %v", err)
+	}
+	if stoppedResp.GetJob().GetState() != pb.JobState_JOB_STATE_QUEUED {
+		t.Errorf("State = %v, want JOB_STATE_QUEUED", stoppedResp.GetJob().GetState())
+	}
+	if stoppedResp.GetJob().GetCurrentAttempt() != 1 {
+		t.Errorf("CurrentAttempt = %d, want unchanged 1", stoppedResp.GetJob().GetCurrentAttempt())
+	}
+}
+
+func TestReportJobStoppedEmptyIDReturnsInvalidArgument(t *testing.T) {
+	s := newTestServer()
+	_, err := s.ReportJobStopped(context.Background(), &pb.ReportJobStoppedRequest{})
+	assertStatusCode(t, err, codes.InvalidArgument)
+}
+
+func TestReportJobStoppedMissingJobReturnsNotFound(t *testing.T) {
+	s := newTestServer()
+	_, err := s.ReportJobStopped(context.Background(), &pb.ReportJobStoppedRequest{JobId: "does-not-exist"})
+	assertStatusCode(t, err, codes.NotFound)
+}

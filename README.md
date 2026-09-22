@@ -1,17 +1,18 @@
 # OrionQueue — Distributed GPU Workload Orchestrator
 
-> **Status: Phase 6 (job execution) complete.** A SCHEDULED job now actually
-> runs: the control plane delivers job assignments to workers on the existing
-> heartbeat cycle, each worker executes it with a deterministic fake-GPU
-> executor on its own thread (so heartbeats never stall behind a long job),
-> and reports Started/Completed/Failed back — verified live end to end for
-> all three lifecycle paths: a normal job reaching `SUCCEEDED`, a failing job
-> retrying then reaching terminal `FAILED` once `retry_limit` is exhausted,
-> and a job surviving a real `docker kill` of its worker mid-execution via
-> the existing lease-expiry detection, then completing after the worker
-> restarted. Cancellation and preemption of a RUNNING job are not wired in
-> yet — that's Phase 7. See [PROJECT_STATUS.md](PROJECT_STATUS.md) for the
-> live phase tracker and
+> **Status: Phase 7 (cancellation and preemption) complete.** A RUNNING job
+> can now be gracefully stopped: cancelling one delivers a stop signal to its
+> worker on the next heartbeat, which interrupts its execution thread
+> cooperatively and confirms back — verified live with a job interrupted at
+> step 6 of 30, reaching terminal `CANCELLED` within one heartbeat interval.
+> The scheduler can also preempt a lower-priority `preemptible` RUNNING job to
+> free capacity for a higher-priority pending one (opt-in, off by default —
+> ADR-0005) — verified live: a 2-GPU low-priority job was preempted, a
+> 1-GPU high-priority job ran to completion on the freed capacity, and the
+> preempted job was automatically rescheduled afterward with its retry count
+> untouched. Resuming a preempted/cancelled job from a checkpoint instead of
+> step 1 is Phase 8, once a checkpoint store exists. See
+> [PROJECT_STATUS.md](PROJECT_STATUS.md) for the live phase tracker and
 > [docs/architecture/system-overview.md](docs/architecture/system-overview.md)
 > for the full design.
 
@@ -97,7 +98,7 @@ curl -X POST http://localhost:7080/api/v1/jobs -d '{
 
 curl http://localhost:7080/api/v1/jobs                     # list
 curl http://localhost:7080/api/v1/jobs/<id>                # get
-curl -X POST http://localhost:7080/api/v1/jobs/<id>/cancel -d '{}'  # rejected while RUNNING until Phase 7
+curl -X POST http://localhost:7080/api/v1/jobs/<id>/cancel -d '{}'  # QUEUED/SCHEDULED -> CANCELLED immediately; RUNNING -> CANCEL_REQUESTED, then CANCELLED once its worker confirms (see below)
 curl -X POST http://localhost:7080/api/v1/jobs/<id>/retry -d '{}'   # only valid once a job has reached terminal FAILED
 ```
 
@@ -158,6 +159,58 @@ if retries were already exhausted) — the api log records
 (`docker compose up -d worker` / `docker compose start worker`) to see it
 register again and the requeued job get picked back up and run to
 completion.
+
+**Cancel a RUNNING job (Phase 7):** submit a job, let it reach
+`JOB_STATE_RUNNING`, then cancel it:
+
+```bash
+curl -X POST http://localhost:7080/api/v1/jobs/<id>/cancel -d '{}'
+# -> state: JOB_STATE_CANCEL_REQUESTED immediately (nothing has actually
+#    stopped the worker's execution yet)
+sleep 6
+curl http://localhost:7080/api/v1/jobs/<id>
+# -> state: JOB_STATE_CANCELLED — the assigned worker picked up the stop
+#    signal on its next heartbeat, interrupted the job's executor thread
+#    cooperatively, and confirmed back via ReportJobStopped
+```
+
+A job that's still `QUEUED`/`SCHEDULED` (nothing executing it yet)
+cancels straight to `JOB_STATE_CANCELLED` with no wait, same as before
+Phase 7. Cancelling an already-terminal or already-`CANCEL_REQUESTED` job
+is a no-op, not an error — safe to retry the same cancel call.
+
+**Watch a lower-priority job get preempted (Phase 7, opt-in):**
+preemption is off by default (ADR-0005) — start the stack with it enabled:
+
+```bash
+ORIONQUEUE_PREEMPTION_ENABLED=true docker compose up -d
+```
+
+Then, with a worker that has (say) 2 GPUs, submit a `preemptible` job
+using all of them, let it reach `JOB_STATE_RUNNING`, then submit a
+higher-priority job needing 1 GPU:
+
+```bash
+curl -X POST http://localhost:7080/api/v1/jobs -d '{
+  "name": "low", "owner": "you", "image": "img", "priority": 10, "preemptible": true,
+  "command": ["--steps=60", "--step-seconds=1"],
+  "resources": {"gpu_count": 2, "cpu_cores": 1}
+}'
+sleep 8   # let it reach RUNNING and commit both GPUs
+curl -X POST http://localhost:7080/api/v1/jobs -d '{
+  "name": "high", "owner": "you", "image": "img", "priority": 90,
+  "command": ["--steps=3", "--step-seconds=1"],
+  "resources": {"gpu_count": 1, "cpu_cores": 1}
+}'
+sleep 15
+curl http://localhost:7080/api/v1/jobs/<low-id>   # JOB_STATE_QUEUED (preempted, then rescheduled once capacity allowed)
+curl http://localhost:7080/api/v1/jobs/<high-id>  # JOB_STATE_SUCCEEDED
+```
+
+The low-priority job's `current_attempt` never increments from being
+preempted — only a genuine failure or worker loss counts against
+`retry_limit`. It also restarts from step 1 rather than resuming where it
+left off; resuming from a checkpoint is Phase 8.
 
 **Watch a job actually get scheduled:** with a worker registered, submit a
 job that fits its capacity and poll it — within one scheduling pass (default

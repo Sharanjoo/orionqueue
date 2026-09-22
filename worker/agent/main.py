@@ -17,12 +17,22 @@ to the control plane around it, so a long-running (simulated) job never
 blocks the heartbeat loop — a missed heartbeat during a slow job would
 otherwise risk the worker being declared LOST (Phase 4) while it's still
 healthy and simply busy. Real GPU execution replacing executors.fake is
-Phase 9; graceful cancellation/draining of in-flight jobs on shutdown is
-Phase 7 — until then, a SIGTERM/SIGINT during job execution abandons any
-still-running job threads (they're daemon threads and die with the
-process) and relies on the existing lease-expiry + LoseWorker recovery
-path (Phase 4/6) to requeue or fail them, exactly as if the worker had
-crashed outright.
+Phase 9.
+
+Phase 7 scope: a heartbeat response may also carry stop_job_ids — jobs
+this worker should cooperatively stop (a user cancelled a RUNNING job, or
+the scheduler preempted it for a higher-priority one — the worker doesn't
+need to know or care which). Each running job's thread has its own
+threading.Event, passed to executors.fake.run() as should_stop; setting
+it makes that job's run() return early with stopped=True on its next
+between-step check, and the thread reports that via
+JobService.ReportJobStopped instead of Completed/Failed. Note that a
+SIGTERM/SIGINT to the worker process itself is still NOT a graceful
+drain: it abandons any still-running job threads outright (they're daemon
+threads and die with the process), relying on the existing lease-expiry +
+LoseWorker recovery path (Phase 4/6) to requeue or fail/cancel/preempt
+them, exactly as if the worker had crashed. Only a server-initiated stop
+signal is cooperative; process shutdown is not.
 """
 
 from __future__ import annotations
@@ -104,6 +114,7 @@ def run(cfg: Config, logger, client: WorkerClient, gpus: list[gpu_fake.GPU]) -> 
     )
 
     running_jobs: dict[str, threading.Thread] = {}
+    cancel_events: dict[str, threading.Event] = {}
     running_jobs_lock = threading.Lock()
 
     while not shutdown_requested["value"]:
@@ -121,6 +132,7 @@ def run(cfg: Config, logger, client: WorkerClient, gpus: list[gpu_fake.GPU]) -> 
                         "worker_id": worker_id,
                         "running_jobs": len(running_job_ids),
                         "newly_assigned": len(result.assigned_jobs),
+                        "stop_requested": len(result.stop_job_ids),
                     }
                 },
             )
@@ -135,7 +147,27 @@ def run(cfg: Config, logger, client: WorkerClient, gpus: list[gpu_fake.GPU]) -> 
             with running_jobs_lock:
                 if job.job_id in running_jobs:
                     continue
-            _start_job(logger, client, worker_id, job, running_jobs, running_jobs_lock)
+            _start_job(
+                logger, client, worker_id, job, running_jobs, cancel_events, running_jobs_lock
+            )
+
+        for job_id in result.stop_job_ids:
+            with running_jobs_lock:
+                event = cancel_events.get(job_id)
+            if event is not None:
+                event.set()
+                logger.info(
+                    "stop signal delivered to job's execution thread",
+                    extra={"fields": {"job_id": job_id, "worker_id": worker_id}},
+                )
+            # If event is None, the job isn't (or isn't yet) running here —
+            # e.g. it's still on the assigned_jobs side of this very
+            # heartbeat response and hasn't started a thread yet, or it
+            # already finished and reported terminal on its own. Either
+            # way there's nothing to signal; a job that starts moments
+            # later will simply appear in stop_job_ids again on the next
+            # heartbeat (the server keeps offering it until it sees
+            # ReportJobStopped), so nothing is lost.
 
     logger.info("stopped")
     return 0
@@ -147,16 +179,23 @@ def _start_job(
     worker_id: str,
     job: AssignedJob,
     running_jobs: dict[str, threading.Thread],
+    cancel_events: dict[str, threading.Event],
     running_jobs_lock: threading.Lock,
 ) -> None:
     """Starts one assigned job in its own daemon thread, so job execution
     (which, even in fake-GPU mode, is deliberately modeled as taking real
     wall-clock time — see executors/fake.py) never blocks the heartbeat
     loop above. The thread reports Started before executing and
-    Completed/Failed after, then removes itself from running_jobs so the
-    next heartbeat's running_job_ids reflects reality and the job isn't
-    started a second time.
+    Completed/Failed/Stopped after, then removes itself from running_jobs
+    (and cancel_events) so the next heartbeat's running_job_ids reflects
+    reality and the job isn't started a second time.
+
+    cancel_events holds one threading.Event per running job, checked by
+    executors.fake.run()'s should_stop hook — see run()'s stop_job_ids
+    handling above, which is what actually sets one.
     """
+
+    cancel_event = threading.Event()
 
     def _execute() -> None:
         job_id = job.job_id
@@ -164,23 +203,48 @@ def _start_job(
             client.report_started(job_id, worker_id)
             logger.info("job started", extra={"fields": {"job_id": job_id, "worker_id": worker_id}})
         except grpc.RpcError as exc:
-            # The control plane already believes this job is SCHEDULED to
-            # us (that's why it appeared in assigned_jobs); a failure to
-            # ack "started" is logged but doesn't stop execution — the
-            # subsequent Completed/Failed report is what actually matters
+            if exc.code() == grpc.StatusCode.FAILED_PRECONDITION:
+                # The job is no longer SCHEDULED on the server (e.g. it
+                # was cancelled — SCHEDULED jobs go straight to CANCELLED,
+                # with no stop signal involved, since nothing is executing
+                # them yet — between the heartbeat that offered it and
+                # this call). It must not be executed at all: clean up and
+                # return without ever calling executor_fake.run().
+                logger.info(
+                    "job is no longer SCHEDULED on the control plane, not executing it",
+                    extra={"fields": {"job_id": job_id, "error": str(exc)}},
+                )
+                with running_jobs_lock:
+                    running_jobs.pop(job_id, None)
+                    cancel_events.pop(job_id, None)
+                return
+            # Any other error (network/unavailable/etc.) is logged but
+            # doesn't stop execution — the control plane already believes
+            # this job is SCHEDULED to us, and the subsequent
+            # Completed/Failed/Stopped report is what actually matters
             # for the job's terminal state.
             logger.error(
                 "failed to report job started, executing anyway",
                 extra={"fields": {"job_id": job_id, "error": str(exc)}},
             )
 
-        outcome = executor_fake.run(job.command, timeout_seconds=job.timeout_seconds)
+        outcome = executor_fake.run(
+            job.command, timeout_seconds=job.timeout_seconds, should_stop=cancel_event.is_set
+        )
 
         try:
             if outcome.success:
                 client.report_completed(job_id, worker_id, exit_code=0)
                 logger.info(
                     "job completed",
+                    extra={
+                        "fields": {"job_id": job_id, "steps_completed": outcome.steps_completed}
+                    },
+                )
+            elif outcome.stopped:
+                client.report_stopped(job_id, worker_id)
+                logger.info(
+                    "job stopped (cancelled or preempted)",
                     extra={
                         "fields": {"job_id": job_id, "steps_completed": outcome.steps_completed}
                     },
@@ -205,10 +269,12 @@ def _start_job(
         finally:
             with running_jobs_lock:
                 running_jobs.pop(job_id, None)
+                cancel_events.pop(job_id, None)
 
     thread = threading.Thread(target=_execute, name=f"orionqueue-job-{job.job_id}", daemon=True)
     with running_jobs_lock:
         running_jobs[job.job_id] = thread
+        cancel_events[job.job_id] = cancel_event
     thread.start()
 
 

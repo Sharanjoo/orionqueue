@@ -51,12 +51,14 @@ class WorkerHeartbeatRequest(_message.Message):
     def __init__(self, worker_id: _Optional[str] = ..., gpus: _Optional[_Iterable[_Union[_worker_pb2.GPU, _Mapping]]] = ..., running_job_ids: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class WorkerHeartbeatResponse(_message.Message):
-    __slots__ = ("worker", "assigned_jobs")
+    __slots__ = ("worker", "assigned_jobs", "stop_job_ids")
     WORKER_FIELD_NUMBER: _ClassVar[int]
     ASSIGNED_JOBS_FIELD_NUMBER: _ClassVar[int]
+    STOP_JOB_IDS_FIELD_NUMBER: _ClassVar[int]
     worker: _worker_pb2.Worker
     assigned_jobs: _containers.RepeatedCompositeFieldContainer[_job_pb2.Job]
-    def __init__(self, worker: _Optional[_Union[_worker_pb2.Worker, _Mapping]] = ..., assigned_jobs: _Optional[_Iterable[_Union[_job_pb2.Job, _Mapping]]] = ...) -> None: ...
+    stop_job_ids: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, worker: _Optional[_Union[_worker_pb2.Worker, _Mapping]] = ..., assigned_jobs: _Optional[_Iterable[_Union[_job_pb2.Job, _Mapping]]] = ..., stop_job_ids: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class ListWorkersRequest(_message.Message):
     __slots__ = ("page_size", "page_token", "status_filter")

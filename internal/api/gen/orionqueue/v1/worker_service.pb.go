@@ -232,7 +232,16 @@ type WorkerHeartbeatResponse struct {
 	// this on the heartbeat response (rather than a separate poll/push
 	// mechanism) reuses a channel the worker is already calling on a
 	// steady interval — see docs/architecture/system-overview.md.
-	AssignedJobs  []*Job `protobuf:"bytes,2,rep,name=assigned_jobs,json=assignedJobs,proto3" json:"assigned_jobs,omitempty"`
+	AssignedJobs []*Job `protobuf:"bytes,2,rep,name=assigned_jobs,json=assignedJobs,proto3" json:"assigned_jobs,omitempty"`
+	// stop_job_ids lists jobs assigned to this worker that should be
+	// cooperatively stopped — either a user cancelled a RUNNING job
+	// (server state CANCEL_REQUESTED) or the scheduler preempted it for a
+	// higher-priority job (server state PREEMPTED). Only IDs are sent (the
+	// worker already has these jobs' full details from when it started
+	// them via assigned_jobs); the worker signals its execution thread to
+	// stop and, once stopped, calls JobService.ReportJobStopped — see
+	// docs/adr/0005-preemption-policy.md.
+	StopJobIds    []string `protobuf:"bytes,3,rep,name=stop_job_ids,json=stopJobIds,proto3" json:"stop_job_ids,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -277,6 +286,13 @@ func (x *WorkerHeartbeatResponse) GetWorker() *Worker {
 func (x *WorkerHeartbeatResponse) GetAssignedJobs() []*Job {
 	if x != nil {
 		return x.AssignedJobs
+	}
+	return nil
+}
+
+func (x *WorkerHeartbeatResponse) GetStopJobIds() []string {
+	if x != nil {
+		return x.StopJobIds
 	}
 	return nil
 }
@@ -414,10 +430,12 @@ const file_orionqueue_v1_worker_service_proto_rawDesc = "" +
 	"\x16WorkerHeartbeatRequest\x12\x1b\n" +
 	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12&\n" +
 	"\x04gpus\x18\x02 \x03(\v2\x12.orionqueue.v1.GPUR\x04gpus\x12&\n" +
-	"\x0frunning_job_ids\x18\x03 \x03(\tR\rrunningJobIds\"\x81\x01\n" +
+	"\x0frunning_job_ids\x18\x03 \x03(\tR\rrunningJobIds\"\xa3\x01\n" +
 	"\x17WorkerHeartbeatResponse\x12-\n" +
 	"\x06worker\x18\x01 \x01(\v2\x15.orionqueue.v1.WorkerR\x06worker\x127\n" +
-	"\rassigned_jobs\x18\x02 \x03(\v2\x12.orionqueue.v1.JobR\fassignedJobs\"\x92\x01\n" +
+	"\rassigned_jobs\x18\x02 \x03(\v2\x12.orionqueue.v1.JobR\fassignedJobs\x12 \n" +
+	"\fstop_job_ids\x18\x03 \x03(\tR\n" +
+	"stopJobIds\"\x92\x01\n" +
 	"\x12ListWorkersRequest\x12\x1b\n" +
 	"\tpage_size\x18\x01 \x01(\x05R\bpageSize\x12\x1d\n" +
 	"\n" +

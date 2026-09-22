@@ -104,11 +104,31 @@ message ReportJobFailedResponse {
   Job job = 1;
 }
 
+// ReportJobStopped is called by the worker agent once it has cooperatively
+// stopped a job's execution in response to a stop signal delivered via
+// WorkerHeartbeatResponse.stop_job_ids (see worker_service.proto) — sent
+// for both a user-requested cancellation of a RUNNING job (server state
+// CANCEL_REQUESTED) and a scheduler-initiated preemption (server state
+// PREEMPTED). The worker itself doesn't need to know or care which one
+// caused the stop signal; jobs.Service.ReportStopped looks at the job's
+// current server-side state to decide the correct next transition
+// (CANCEL_REQUESTED -> terminal CANCELLED, or PREEMPTED -> QUEUED for
+// rescheduling) — see docs/adr/0005-preemption-policy.md.
+message ReportJobStoppedRequest {
+  string job_id = 1;
+  string worker_id = 2;
+}
+
+message ReportJobStoppedResponse {
+  Job job = 1;
+}
+
 // JobService is OrionQueue's job submission and management API. Phase 2
 // scope: SubmitJob, GetJob, ListJobs, CancelJob, RetryJob. Phase 6 adds
-// ReportJobStarted/Completed/Failed. WatchJob (streaming job events) is
-// added once job_events history is exposed through the API — the table
-// itself has existed since Phase 3.
+// ReportJobStarted/Completed/Failed. Phase 7 adds ReportJobStopped and
+// makes CancelJob able to reach a RUNNING job (previously rejected).
+// WatchJob (streaming job events) is added once job_events history is
+// exposed through the API — the table itself has existed since Phase 3.
 service JobService {
   rpc SubmitJob(SubmitJobRequest) returns (SubmitJobResponse) {
     option (google.api.http) = {
@@ -148,4 +168,6 @@ service JobService {
   rpc ReportJobCompleted(ReportJobCompletedRequest) returns (ReportJobCompletedResponse);
 
   rpc ReportJobFailed(ReportJobFailedRequest) returns (ReportJobFailedResponse);
+
+  rpc ReportJobStopped(ReportJobStoppedRequest) returns (ReportJobStoppedResponse);
 }

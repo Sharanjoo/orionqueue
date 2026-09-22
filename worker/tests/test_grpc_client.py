@@ -63,9 +63,10 @@ def test_gpu_to_proto_maps_unhealthy_state():
 
 
 class _FakeWorkerServicer(worker_service_pb2_grpc.WorkerServiceServicer):
-    def __init__(self, assigned_jobs=()):
+    def __init__(self, assigned_jobs=(), stop_job_ids=()):
         self.heartbeat_requests: list[worker_service_pb2.WorkerHeartbeatRequest] = []
         self._assigned_jobs = list(assigned_jobs)
+        self._stop_job_ids = list(stop_job_ids)
 
     def RegisterWorker(self, request, context):
         return worker_service_pb2.RegisterWorkerResponse(
@@ -78,6 +79,7 @@ class _FakeWorkerServicer(worker_service_pb2_grpc.WorkerServiceServicer):
         return worker_service_pb2.WorkerHeartbeatResponse(
             worker=worker_pb2.Worker(id=request.worker_id),
             assigned_jobs=self._assigned_jobs,
+            stop_job_ids=self._stop_job_ids,
         )
 
 
@@ -86,6 +88,7 @@ class _FakeJobServicer(job_service_pb2_grpc.JobServiceServicer):
         self.started_requests: list[job_service_pb2.ReportJobStartedRequest] = []
         self.completed_requests: list[job_service_pb2.ReportJobCompletedRequest] = []
         self.failed_requests: list[job_service_pb2.ReportJobFailedRequest] = []
+        self.stopped_requests: list[job_service_pb2.ReportJobStoppedRequest] = []
 
     def ReportJobStarted(self, request, context):
         self.started_requests.append(request)
@@ -98,6 +101,10 @@ class _FakeJobServicer(job_service_pb2_grpc.JobServiceServicer):
     def ReportJobFailed(self, request, context):
         self.failed_requests.append(request)
         return job_service_pb2.ReportJobFailedResponse(job=job_pb2.Job(id=request.job_id))
+
+    def ReportJobStopped(self, request, context):
+        self.stopped_requests.append(request)
+        return job_service_pb2.ReportJobStoppedResponse(job=job_pb2.Job(id=request.job_id))
 
 
 @pytest.fixture
@@ -206,3 +213,45 @@ def test_report_failed_sends_failure_reason(fake_server):
     assert len(job_servicer.failed_requests) == 1
     assert job_servicer.failed_requests[0].job_id == "job-1"
     assert job_servicer.failed_requests[0].failure_reason == "simulated failure at step 2 of 3"
+
+
+def test_report_stopped_sends_job_and_worker_id(fake_server):
+    _, job_servicer, addr = fake_server
+    client = WorkerClient(addr)
+    try:
+        client.report_stopped("job-1", "worker-fake-1")
+    finally:
+        client.close()
+
+    assert len(job_servicer.stopped_requests) == 1
+    assert job_servicer.stopped_requests[0].job_id == "job-1"
+    assert job_servicer.stopped_requests[0].worker_id == "worker-fake-1"
+
+
+def test_heartbeat_returns_no_stop_job_ids_when_none_pending(fake_server):
+    _, _, addr = fake_server
+    client = WorkerClient(addr)
+    try:
+        result = client.heartbeat("worker-fake-1", gpus=[], running_job_ids=[])
+    finally:
+        client.close()
+
+    assert result.stop_job_ids == []
+
+
+def test_heartbeat_parses_stop_job_ids():
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))
+    worker_servicer = _FakeWorkerServicer(stop_job_ids=["job-1", "job-2"])
+    worker_service_pb2_grpc.add_WorkerServiceServicer_to_server(worker_servicer, server)
+    port = server.add_insecure_port("127.0.0.1:0")
+    server.start()
+    try:
+        client = WorkerClient(f"127.0.0.1:{port}")
+        try:
+            result = client.heartbeat("worker-fake-1", gpus=[], running_job_ids=[])
+        finally:
+            client.close()
+    finally:
+        server.stop(grace=None)
+
+    assert result.stop_job_ids == ["job-1", "job-2"]

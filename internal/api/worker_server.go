@@ -79,6 +79,18 @@ func (s *WorkerServer) WorkerHeartbeat(ctx context.Context, req *pb.WorkerHeartb
 	for _, j := range assigned {
 		resp.AssignedJobs = append(resp.AssignedJobs, jobToProto(j))
 	}
+
+	stoppable, err := s.jobs.ListStoppableForWorker(ctx, req.GetWorkerId())
+	if err != nil {
+		// Same reasoning as above: don't fail the heartbeat over this —
+		// a missed stop signal is caught on the worker's next heartbeat.
+		s.logger.Error("failed to list stoppable jobs for heartbeat response",
+			slog.String("worker_id", req.GetWorkerId()), slog.String("error", err.Error()))
+		return resp, nil
+	}
+	for _, j := range stoppable {
+		resp.StopJobIds = append(resp.StopJobIds, j.ID)
+	}
 	return resp, nil
 }
 

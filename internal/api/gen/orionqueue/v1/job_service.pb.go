@@ -882,6 +882,112 @@ func (x *ReportJobFailedResponse) GetJob() *Job {
 	return nil
 }
 
+// ReportJobStopped is called by the worker agent once it has cooperatively
+// stopped a job's execution in response to a stop signal delivered via
+// WorkerHeartbeatResponse.stop_job_ids (see worker_service.proto) — sent
+// for both a user-requested cancellation of a RUNNING job (server state
+// CANCEL_REQUESTED) and a scheduler-initiated preemption (server state
+// PREEMPTED). The worker itself doesn't need to know or care which one
+// caused the stop signal; jobs.Service.ReportStopped looks at the job's
+// current server-side state to decide the correct next transition
+// (CANCEL_REQUESTED -> terminal CANCELLED, or PREEMPTED -> QUEUED for
+// rescheduling) — see docs/adr/0005-preemption-policy.md.
+type ReportJobStoppedRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	WorkerId      string                 `protobuf:"bytes,2,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReportJobStoppedRequest) Reset() {
+	*x = ReportJobStoppedRequest{}
+	mi := &file_orionqueue_v1_job_service_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReportJobStoppedRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReportJobStoppedRequest) ProtoMessage() {}
+
+func (x *ReportJobStoppedRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_orionqueue_v1_job_service_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReportJobStoppedRequest.ProtoReflect.Descriptor instead.
+func (*ReportJobStoppedRequest) Descriptor() ([]byte, []int) {
+	return file_orionqueue_v1_job_service_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *ReportJobStoppedRequest) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+func (x *ReportJobStoppedRequest) GetWorkerId() string {
+	if x != nil {
+		return x.WorkerId
+	}
+	return ""
+}
+
+type ReportJobStoppedResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Job           *Job                   `protobuf:"bytes,1,opt,name=job,proto3" json:"job,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReportJobStoppedResponse) Reset() {
+	*x = ReportJobStoppedResponse{}
+	mi := &file_orionqueue_v1_job_service_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReportJobStoppedResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReportJobStoppedResponse) ProtoMessage() {}
+
+func (x *ReportJobStoppedResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_orionqueue_v1_job_service_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReportJobStoppedResponse.ProtoReflect.Descriptor instead.
+func (*ReportJobStoppedResponse) Descriptor() ([]byte, []int) {
+	return file_orionqueue_v1_job_service_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *ReportJobStoppedResponse) GetJob() *Job {
+	if x != nil {
+		return x.Job
+	}
+	return nil
+}
+
 var File_orionqueue_v1_job_service_proto protoreflect.FileDescriptor
 
 const file_orionqueue_v1_job_service_proto_rawDesc = "" +
@@ -939,7 +1045,12 @@ const file_orionqueue_v1_job_service_proto_rawDesc = "" +
 	"\tworker_id\x18\x02 \x01(\tR\bworkerId\x12%\n" +
 	"\x0efailure_reason\x18\x03 \x01(\tR\rfailureReason\"?\n" +
 	"\x17ReportJobFailedResponse\x12$\n" +
-	"\x03job\x18\x01 \x01(\v2\x12.orionqueue.v1.JobR\x03job2\xd2\x06\n" +
+	"\x03job\x18\x01 \x01(\v2\x12.orionqueue.v1.JobR\x03job\"M\n" +
+	"\x17ReportJobStoppedRequest\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x1b\n" +
+	"\tworker_id\x18\x02 \x01(\tR\bworkerId\"@\n" +
+	"\x18ReportJobStoppedResponse\x12$\n" +
+	"\x03job\x18\x01 \x01(\v2\x12.orionqueue.v1.JobR\x03job2\xb7\a\n" +
 	"\n" +
 	"JobService\x12g\n" +
 	"\tSubmitJob\x12\x1f.orionqueue.v1.SubmitJobRequest\x1a .orionqueue.v1.SubmitJobResponse\"\x17\x82\xd3\xe4\x93\x02\x11:\x01*\"\f/api/v1/jobs\x12`\n" +
@@ -949,7 +1060,8 @@ const file_orionqueue_v1_job_service_proto_rawDesc = "" +
 	"\bRetryJob\x12\x1e.orionqueue.v1.RetryJobRequest\x1a\x1f.orionqueue.v1.RetryJobResponse\"\"\x82\xd3\xe4\x93\x02\x1c:\x01*\"\x17/api/v1/jobs/{id}/retry\x12c\n" +
 	"\x10ReportJobStarted\x12&.orionqueue.v1.ReportJobStartedRequest\x1a'.orionqueue.v1.ReportJobStartedResponse\x12i\n" +
 	"\x12ReportJobCompleted\x12(.orionqueue.v1.ReportJobCompletedRequest\x1a).orionqueue.v1.ReportJobCompletedResponse\x12`\n" +
-	"\x0fReportJobFailed\x12%.orionqueue.v1.ReportJobFailedRequest\x1a&.orionqueue.v1.ReportJobFailedResponseBMZKgithub.com/Sharanjoo/orionqueue/internal/api/gen/orionqueue/v1;orionqueuev1b\x06proto3"
+	"\x0fReportJobFailed\x12%.orionqueue.v1.ReportJobFailedRequest\x1a&.orionqueue.v1.ReportJobFailedResponse\x12c\n" +
+	"\x10ReportJobStopped\x12&.orionqueue.v1.ReportJobStoppedRequest\x1a'.orionqueue.v1.ReportJobStoppedResponseBMZKgithub.com/Sharanjoo/orionqueue/internal/api/gen/orionqueue/v1;orionqueuev1b\x06proto3"
 
 var (
 	file_orionqueue_v1_job_service_proto_rawDescOnce sync.Once
@@ -963,7 +1075,7 @@ func file_orionqueue_v1_job_service_proto_rawDescGZIP() []byte {
 	return file_orionqueue_v1_job_service_proto_rawDescData
 }
 
-var file_orionqueue_v1_job_service_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
+var file_orionqueue_v1_job_service_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
 var file_orionqueue_v1_job_service_proto_goTypes = []any{
 	(*SubmitJobRequest)(nil),           // 0: orionqueue.v1.SubmitJobRequest
 	(*SubmitJobResponse)(nil),          // 1: orionqueue.v1.SubmitJobResponse
@@ -981,42 +1093,47 @@ var file_orionqueue_v1_job_service_proto_goTypes = []any{
 	(*ReportJobCompletedResponse)(nil), // 13: orionqueue.v1.ReportJobCompletedResponse
 	(*ReportJobFailedRequest)(nil),     // 14: orionqueue.v1.ReportJobFailedRequest
 	(*ReportJobFailedResponse)(nil),    // 15: orionqueue.v1.ReportJobFailedResponse
-	(*ResourceRequest)(nil),            // 16: orionqueue.v1.ResourceRequest
-	(*Job)(nil),                        // 17: orionqueue.v1.Job
-	(JobState)(0),                      // 18: orionqueue.v1.JobState
+	(*ReportJobStoppedRequest)(nil),    // 16: orionqueue.v1.ReportJobStoppedRequest
+	(*ReportJobStoppedResponse)(nil),   // 17: orionqueue.v1.ReportJobStoppedResponse
+	(*ResourceRequest)(nil),            // 18: orionqueue.v1.ResourceRequest
+	(*Job)(nil),                        // 19: orionqueue.v1.Job
+	(JobState)(0),                      // 20: orionqueue.v1.JobState
 }
 var file_orionqueue_v1_job_service_proto_depIdxs = []int32{
-	16, // 0: orionqueue.v1.SubmitJobRequest.resources:type_name -> orionqueue.v1.ResourceRequest
-	17, // 1: orionqueue.v1.SubmitJobResponse.job:type_name -> orionqueue.v1.Job
-	17, // 2: orionqueue.v1.GetJobResponse.job:type_name -> orionqueue.v1.Job
-	18, // 3: orionqueue.v1.ListJobsRequest.state_filter:type_name -> orionqueue.v1.JobState
-	17, // 4: orionqueue.v1.ListJobsResponse.jobs:type_name -> orionqueue.v1.Job
-	17, // 5: orionqueue.v1.CancelJobResponse.job:type_name -> orionqueue.v1.Job
-	17, // 6: orionqueue.v1.RetryJobResponse.job:type_name -> orionqueue.v1.Job
-	17, // 7: orionqueue.v1.ReportJobStartedResponse.job:type_name -> orionqueue.v1.Job
-	17, // 8: orionqueue.v1.ReportJobCompletedResponse.job:type_name -> orionqueue.v1.Job
-	17, // 9: orionqueue.v1.ReportJobFailedResponse.job:type_name -> orionqueue.v1.Job
-	0,  // 10: orionqueue.v1.JobService.SubmitJob:input_type -> orionqueue.v1.SubmitJobRequest
-	2,  // 11: orionqueue.v1.JobService.GetJob:input_type -> orionqueue.v1.GetJobRequest
-	4,  // 12: orionqueue.v1.JobService.ListJobs:input_type -> orionqueue.v1.ListJobsRequest
-	6,  // 13: orionqueue.v1.JobService.CancelJob:input_type -> orionqueue.v1.CancelJobRequest
-	8,  // 14: orionqueue.v1.JobService.RetryJob:input_type -> orionqueue.v1.RetryJobRequest
-	10, // 15: orionqueue.v1.JobService.ReportJobStarted:input_type -> orionqueue.v1.ReportJobStartedRequest
-	12, // 16: orionqueue.v1.JobService.ReportJobCompleted:input_type -> orionqueue.v1.ReportJobCompletedRequest
-	14, // 17: orionqueue.v1.JobService.ReportJobFailed:input_type -> orionqueue.v1.ReportJobFailedRequest
-	1,  // 18: orionqueue.v1.JobService.SubmitJob:output_type -> orionqueue.v1.SubmitJobResponse
-	3,  // 19: orionqueue.v1.JobService.GetJob:output_type -> orionqueue.v1.GetJobResponse
-	5,  // 20: orionqueue.v1.JobService.ListJobs:output_type -> orionqueue.v1.ListJobsResponse
-	7,  // 21: orionqueue.v1.JobService.CancelJob:output_type -> orionqueue.v1.CancelJobResponse
-	9,  // 22: orionqueue.v1.JobService.RetryJob:output_type -> orionqueue.v1.RetryJobResponse
-	11, // 23: orionqueue.v1.JobService.ReportJobStarted:output_type -> orionqueue.v1.ReportJobStartedResponse
-	13, // 24: orionqueue.v1.JobService.ReportJobCompleted:output_type -> orionqueue.v1.ReportJobCompletedResponse
-	15, // 25: orionqueue.v1.JobService.ReportJobFailed:output_type -> orionqueue.v1.ReportJobFailedResponse
-	18, // [18:26] is the sub-list for method output_type
-	10, // [10:18] is the sub-list for method input_type
-	10, // [10:10] is the sub-list for extension type_name
-	10, // [10:10] is the sub-list for extension extendee
-	0,  // [0:10] is the sub-list for field type_name
+	18, // 0: orionqueue.v1.SubmitJobRequest.resources:type_name -> orionqueue.v1.ResourceRequest
+	19, // 1: orionqueue.v1.SubmitJobResponse.job:type_name -> orionqueue.v1.Job
+	19, // 2: orionqueue.v1.GetJobResponse.job:type_name -> orionqueue.v1.Job
+	20, // 3: orionqueue.v1.ListJobsRequest.state_filter:type_name -> orionqueue.v1.JobState
+	19, // 4: orionqueue.v1.ListJobsResponse.jobs:type_name -> orionqueue.v1.Job
+	19, // 5: orionqueue.v1.CancelJobResponse.job:type_name -> orionqueue.v1.Job
+	19, // 6: orionqueue.v1.RetryJobResponse.job:type_name -> orionqueue.v1.Job
+	19, // 7: orionqueue.v1.ReportJobStartedResponse.job:type_name -> orionqueue.v1.Job
+	19, // 8: orionqueue.v1.ReportJobCompletedResponse.job:type_name -> orionqueue.v1.Job
+	19, // 9: orionqueue.v1.ReportJobFailedResponse.job:type_name -> orionqueue.v1.Job
+	19, // 10: orionqueue.v1.ReportJobStoppedResponse.job:type_name -> orionqueue.v1.Job
+	0,  // 11: orionqueue.v1.JobService.SubmitJob:input_type -> orionqueue.v1.SubmitJobRequest
+	2,  // 12: orionqueue.v1.JobService.GetJob:input_type -> orionqueue.v1.GetJobRequest
+	4,  // 13: orionqueue.v1.JobService.ListJobs:input_type -> orionqueue.v1.ListJobsRequest
+	6,  // 14: orionqueue.v1.JobService.CancelJob:input_type -> orionqueue.v1.CancelJobRequest
+	8,  // 15: orionqueue.v1.JobService.RetryJob:input_type -> orionqueue.v1.RetryJobRequest
+	10, // 16: orionqueue.v1.JobService.ReportJobStarted:input_type -> orionqueue.v1.ReportJobStartedRequest
+	12, // 17: orionqueue.v1.JobService.ReportJobCompleted:input_type -> orionqueue.v1.ReportJobCompletedRequest
+	14, // 18: orionqueue.v1.JobService.ReportJobFailed:input_type -> orionqueue.v1.ReportJobFailedRequest
+	16, // 19: orionqueue.v1.JobService.ReportJobStopped:input_type -> orionqueue.v1.ReportJobStoppedRequest
+	1,  // 20: orionqueue.v1.JobService.SubmitJob:output_type -> orionqueue.v1.SubmitJobResponse
+	3,  // 21: orionqueue.v1.JobService.GetJob:output_type -> orionqueue.v1.GetJobResponse
+	5,  // 22: orionqueue.v1.JobService.ListJobs:output_type -> orionqueue.v1.ListJobsResponse
+	7,  // 23: orionqueue.v1.JobService.CancelJob:output_type -> orionqueue.v1.CancelJobResponse
+	9,  // 24: orionqueue.v1.JobService.RetryJob:output_type -> orionqueue.v1.RetryJobResponse
+	11, // 25: orionqueue.v1.JobService.ReportJobStarted:output_type -> orionqueue.v1.ReportJobStartedResponse
+	13, // 26: orionqueue.v1.JobService.ReportJobCompleted:output_type -> orionqueue.v1.ReportJobCompletedResponse
+	15, // 27: orionqueue.v1.JobService.ReportJobFailed:output_type -> orionqueue.v1.ReportJobFailedResponse
+	17, // 28: orionqueue.v1.JobService.ReportJobStopped:output_type -> orionqueue.v1.ReportJobStoppedResponse
+	20, // [20:29] is the sub-list for method output_type
+	11, // [11:20] is the sub-list for method input_type
+	11, // [11:11] is the sub-list for extension type_name
+	11, // [11:11] is the sub-list for extension extendee
+	0,  // [0:11] is the sub-list for field type_name
 }
 
 func init() { file_orionqueue_v1_job_service_proto_init() }
@@ -1031,7 +1148,7 @@ func file_orionqueue_v1_job_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orionqueue_v1_job_service_proto_rawDesc), len(file_orionqueue_v1_job_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   16,
+			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

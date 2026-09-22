@@ -42,6 +42,12 @@ type Config struct {
 	// scheduling pass while it holds leadership. Only meaningful for
 	// orionqueue-scheduler.
 	SchedulingIntervalSeconds int64
+	// PreemptionEnabled turns on scheduler preemption (a RUNNING,
+	// Preemptible job may be stopped to free resources for a strictly
+	// higher-priority pending job — see ADR-0005). Off by default,
+	// cluster-wide, matching that ADR's "configurable and off by default"
+	// decision. Only meaningful for orionqueue-scheduler.
+	PreemptionEnabled bool
 	// LogLevel controls the minimum level emitted by the service's
 	// structured logger ("debug", "info", "warn", or "error").
 	LogLevel string
@@ -59,6 +65,7 @@ func Defaults(serviceName string) Config {
 		DatabaseURL:               defaultDatabaseURL(serviceName),
 		EtcdEndpoints:             defaultEtcdEndpoints(serviceName),
 		SchedulingIntervalSeconds: 5,
+		PreemptionEnabled:         false, // explicit: off by default, per ADR-0005
 		LogLevel:                  "info",
 	}
 }
@@ -149,6 +156,13 @@ func Load(serviceName string) (Config, error) {
 			return Config{}, fmt.Errorf("invalid ORIONQUEUE_SCHEDULING_INTERVAL_SECONDS %q: %w", v, err)
 		}
 		cfg.SchedulingIntervalSeconds = n
+	}
+	if v, ok := os.LookupEnv("ORIONQUEUE_PREEMPTION_ENABLED"); ok && v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid ORIONQUEUE_PREEMPTION_ENABLED %q: %w", v, err)
+		}
+		cfg.PreemptionEnabled = b
 	}
 	if v, ok := os.LookupEnv("ORIONQUEUE_LOG_LEVEL"); ok && v != "" {
 		cfg.LogLevel = v

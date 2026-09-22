@@ -1,11 +1,12 @@
 # OrionQueue — Distributed GPU Workload Orchestrator
 
-> **Status: Phase 0 (design) complete, no application code yet.** See
+> **Status: Phase 1 (project foundation) complete.** The API, scheduler,
+> worker agent, and frontend all start, are unit-tested, and run together via
+> Docker Compose — but there is no job/worker business logic yet (no gRPC/REST
+> API surface, no scheduling, no GPU simulation). See
 > [PROJECT_STATUS.md](PROJECT_STATUS.md) for the live phase tracker and
 > [docs/architecture/system-overview.md](docs/architecture/system-overview.md)
-> for the full design. This README will grow a Quick Start, API examples, and
-> demo instructions as each phase lands — nothing below is implemented yet
-> unless PROJECT_STATUS.md says so.
+> for the full design.
 
 ## What this is
 
@@ -59,14 +60,51 @@ Design decisions and their trade-offs are recorded as ADRs in
 
 ## Quick start
 
-Not available yet — lands in Phase 1 (project scaffold) and Phase 12 (full
-Docker Compose stack). `PROJECT_STATUS.md` tracks exactly what runs today.
+What exists today is process-foundation only — config, structured logging,
+health endpoints, and (for the frontend) a status placeholder page. There is
+no job submission API yet (that's Phase 2). Requires Go 1.27+, Python 3.11+,
+Node 20+, and Docker.
+
+**Run everything via Docker Compose:**
+
+```bash
+docker compose up --build
+# api:       http://localhost:7080/healthz, /readyz
+# scheduler: http://localhost:7081/healthz, /readyz
+# frontend:  http://localhost:8088
+# worker:    logs only (no HTTP endpoint yet)
+
+docker compose down
+```
+
+**Or run each service directly, without Docker:**
+
+```bash
+./scripts/dev-api.sh         # http://localhost:7080
+./scripts/dev-scheduler.sh   # http://localhost:7081
+./scripts/dev-worker.sh      # creates worker/.venv on first run
+./scripts/dev-frontend.sh    # installs node_modules on first run, then Vite dev server
+```
+
+(`make dev-api`, `make dev-scheduler`, etc. do the same thing — see
+`docs/adr/0000-local-tooling-adaptations.md` for why scripts/ is primary and
+the Makefile is a thin wrapper.)
 
 ## Testing
 
-Not available yet — the test strategy (unit / integration / e2e / load) is
-defined in `docs/architecture/system-overview.md#testing-strategy`; commands
-will appear here as suites are added, starting Phase 1.
+```bash
+./scripts/fmt.sh    # gofmt, black, prettier — applies formatting
+./scripts/lint.sh   # gofmt -l, go vet, golangci-lint (if installed), ruff, black --check, oxlint, prettier --check
+./scripts/test.sh   # go test, pytest, vitest — all current unit tests
+./scripts/build.sh  # go build + frontend production build
+```
+
+Or `make fmt` / `make lint` / `make test` / `make build`. Current suite: 8 Go
+test functions (3 packages), 16 pytest tests, 3 Vitest tests — all passing;
+see `PROJECT_STATUS.md` for the latest run's actual numbers and coverage.
+Integration, end-to-end, and load test suites are added in later phases as
+the functionality they'd exercise (persistence, scheduling, checkpointing)
+gets built.
 
 ## Limitations
 

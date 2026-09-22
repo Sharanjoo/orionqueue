@@ -1,0 +1,76 @@
+.status-page {
+  max-width: 640px;
+  margin: 4rem auto;
+  padding: 0 1.5rem;
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    sans-serif;
+  color: #1a1a1a;
+}
+
+.tagline {
+  color: #555;
+  margin-top: -0.5rem;
+}
+
+.phase-list {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.phase {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0.9rem;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+}
+
+.phase-id {
+  font-weight: 600;
+  min-width: 5.5rem;
+}
+
+.phase-name {
+  flex: 1;
+}
+
+.phase-status {
+  font-size: 0.85rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  text-transform: capitalize;
+  white-space: nowrap;
+}
+
+.phase-in-progress .phase-status {
+  background: #fff3cd;
+  color: #7a5b00;
+}
+
+.phase-not-started .phase-status {
+  background: #eee;
+  color: #555;
+}
+
+@media (prefers-color-scheme: dark) {
+  .status-page {
+    color: #eaeaea;
+  }
+  .tagline {
+    color: #aaa;
+  }
+  .phase {
+    border-color: #333;
+  }
+  .phase-not-started .phase-status {
+    background: #2a2a2a;
+    color: #bbb;
+  }
+}

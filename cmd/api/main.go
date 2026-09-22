@@ -1,13 +1,16 @@
 // Command api is OrionQueue's API service: the gRPC server and REST
 // gateway that external clients (the dashboard, CLI, or curl) submit jobs
-// and read cluster state through.
+// and read cluster state through, and that worker agents register and
+// heartbeat against.
 //
-// Phase 3 scope: job submission, lookup, listing, cancellation, and retry,
-// backed by PostgreSQL — job state survives a restart. Migrations must
-// already be applied (scripts/migrate.sh, or the `migrate` service in
-// docker-compose.yml); this binary does not run them itself. Worker-facing
-// RPCs (RegisterWorker, WorkerHeartbeat, AssignJob, ...) are added in
-// Phase 4/5 once there's a scheduler/worker to call them.
+// Phase 4 scope: adds worker registration, heartbeats, and automatic
+// worker-loss detection (an etcd lease per worker; a background watcher
+// marks a worker LOST the moment its lease expires without a renewing
+// heartbeat) on top of Phase 2/3's job submission/lookup/listing/
+// cancel/retry, backed by PostgreSQL. Migrations must already be applied
+// (scripts/migrate.sh, or the `migrate` service in docker-compose.yml);
+// this binary does not run them itself. Scheduler-facing pieces (AssignJob,
+// leader election) are added in Phase 5.
 package main
 
 import (
@@ -20,6 +23,7 @@ import (
 	"os"
 	"time"
 
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
@@ -28,8 +32,10 @@ import (
 	"github.com/Sharanjoo/orionqueue/internal/config"
 	"github.com/Sharanjoo/orionqueue/internal/health"
 	"github.com/Sharanjoo/orionqueue/internal/jobs"
+	"github.com/Sharanjoo/orionqueue/internal/leases"
 	"github.com/Sharanjoo/orionqueue/internal/logging"
 	"github.com/Sharanjoo/orionqueue/internal/persistence"
+	"github.com/Sharanjoo/orionqueue/internal/workers"
 )
 
 func main() {
@@ -46,18 +52,15 @@ func run() int {
 	}
 
 	logger := logging.NewStdout(cfg.ServiceName, cfg.Environment, cfg.LogLevel)
-	logger.Info("starting", slog.String("http_addr", cfg.HTTPAddr), slog.String("grpc_addr", cfg.GRPCAddr))
+	logger.Info("starting",
+		slog.String("http_addr", cfg.HTTPAddr),
+		slog.String("grpc_addr", cfg.GRPCAddr),
+		slog.Any("etcd_endpoints", cfg.EtcdEndpoints),
+	)
 
 	// Connect with a bounded retry (see persistence.Connect) rather than
 	// failing on the first attempt — Postgres inside Docker Compose can
 	// still be starting even after api's container itself is running.
-	// This is the one dependency this service has; if it's unreachable
-	// after all retries, there's nothing useful this process can do, so
-	// it exits rather than serving requests against a repository that
-	// can't work (jobs.MemoryRepository, Phase 2's fallback, is no longer
-	// wired in here — a service silently reverting to "state doesn't
-	// survive a restart" on DB trouble would be a worse failure mode than
-	// just not starting).
 	dbPool, err := persistence.Connect(context.Background(), cfg.DatabaseURL)
 	if err != nil {
 		logger.Error("failed to connect to database", slog.String("error", err.Error()))
@@ -65,12 +68,30 @@ func run() int {
 	}
 	defer dbPool.Close()
 
-	repo := persistence.NewJobRepository(dbPool)
-	svc := jobs.NewService(repo)
-	jobServer := orionapi.NewJobServer(svc, logger)
+	etcdClient, err := clientv3.New(clientv3.Config{
+		Endpoints:   cfg.EtcdEndpoints,
+		DialTimeout: 10 * time.Second,
+	})
+	if err != nil {
+		logger.Error("failed to create etcd client", slog.String("error", err.Error()))
+		return 1
+	}
+	defer etcdClient.Close()
+	if err := waitForEtcd(context.Background(), etcdClient); err != nil {
+		logger.Error("failed to reach etcd", slog.String("error", err.Error()))
+		return 1
+	}
+
+	jobSvc := jobs.NewService(persistence.NewJobRepository(dbPool))
+	jobServer := orionapi.NewJobServer(jobSvc, logger)
+
+	leaseManager := leases.NewEtcdManager(etcdClient)
+	workerSvc := workers.NewService(persistence.NewWorkerRepository(dbPool), leaseManager)
+	workerServer := orionapi.NewWorkerServer(workerSvc, logger)
 
 	grpcServer := grpc.NewServer()
 	pb.RegisterJobServiceServer(grpcServer, jobServer)
+	pb.RegisterWorkerServiceServer(grpcServer, workerServer)
 	// Server reflection lets ad-hoc tools (grpcurl, grpcui, Postman) call
 	// the API without needing a local copy of the .proto files — useful
 	// for a portfolio project people will want to poke at directly.
@@ -84,7 +105,7 @@ func run() int {
 		return 1
 	}
 
-	gwMux, err := orionapi.NewGatewayMux(context.Background(), jobServer)
+	gwMux, err := orionapi.NewGatewayMux(context.Background(), jobServer, workerServer)
 	if err != nil {
 		logger.Error("failed to build REST gateway", slog.String("error", err.Error()))
 		return 1
@@ -92,7 +113,15 @@ func run() int {
 
 	mux := http.NewServeMux()
 	health.RegisterRoutes(mux, health.Checks{
-		Ready: func(ctx context.Context) error { return dbPool.Ping(ctx) },
+		Ready: func(ctx context.Context) error {
+			if err := dbPool.Ping(ctx); err != nil {
+				return fmt.Errorf("database: %w", err)
+			}
+			if _, err := etcdClient.Get(ctx, "orionqueue-readyz-probe"); err != nil {
+				return fmt.Errorf("etcd: %w", err)
+			}
+			return nil
+		},
 	})
 	mux.Handle("/", gwMux)
 
@@ -102,19 +131,60 @@ func run() int {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	return serve(logger, grpcServer, grpcLis, httpSrv)
+	return serve(logger, grpcServer, grpcLis, httpSrv, workerSvc)
 }
 
-// serve starts the gRPC and HTTP servers together and shuts both down
-// gracefully on the first OS interrupt/SIGTERM or the first one to fail.
-// Split out from run so the orchestration itself — not just its
-// components — could be exercised by a future test with fake servers if
-// that turns out to be worth the complexity; documented as untested today
-// alongside the rest of cmd/api's process-lifecycle wiring (see
-// PROJECT_STATUS.md's coverage notes).
-func serve(logger *slog.Logger, grpcServer *grpc.Server, grpcLis net.Listener, httpSrv *http.Server) int {
+// waitForEtcd checks etcd connectivity with a bounded retry, the same
+// startup-ordering accommodation persistence.Connect makes for Postgres —
+// etcd inside Docker Compose can still be starting even after api's own
+// container is up.
+func waitForEtcd(ctx context.Context, client *clientv3.Client) error {
+	const (
+		maxAttempts = 10
+		baseDelay   = 300 * time.Millisecond
+	)
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		getCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		_, lastErr = client.Get(getCtx, "orionqueue-startup-probe")
+		cancel()
+		if lastErr == nil {
+			return nil
+		}
+		if attempt == maxAttempts {
+			break
+		}
+		select {
+		case <-time.After(baseDelay * time.Duration(attempt)):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return fmt.Errorf("etcd unreachable after %d attempts: %w", maxAttempts, lastErr)
+}
+
+// serve starts the gRPC and HTTP servers together, runs the worker
+// lease-expiration watcher for the process lifetime, and shuts everything
+// down gracefully on the first OS interrupt/SIGTERM or the first
+// component to fail. Split out from run so the orchestration itself —
+// not just its components — could be exercised by a future test with
+// fake servers if that turns out to be worth the complexity; documented
+// as untested today alongside the rest of cmd/api's process-lifecycle
+// wiring (see PROJECT_STATUS.md's coverage notes).
+func serve(logger *slog.Logger, grpcServer *grpc.Server, grpcLis net.Listener, httpSrv *http.Server, workerSvc *workers.Service) int {
 	ctx, stop := health.ShutdownContext()
 	defer stop()
+
+	go workerSvc.WatchExpirations(ctx,
+		func(workerID string) {
+			logger.Info("worker marked LOST (lease expired without a renewing heartbeat)",
+				slog.String("worker_id", workerID))
+		},
+		func(workerID string, err error) {
+			logger.Error("failed to mark worker lost after lease expiration",
+				slog.String("worker_id", workerID), slog.String("error", err.Error()))
+		},
+	)
 
 	errCh := make(chan error, 2)
 	go func() {

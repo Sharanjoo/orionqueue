@@ -26,11 +26,31 @@ jobs:
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - name: buf lint
         run: buf lint
-      - name: buf generate (fail if committed output is stale)
+      - name: buf generate (fail if committed Go/OpenAPI output is stale)
         run: |
           buf generate
           if ! git diff --exit-code -- internal/api/gen docs/api; then
             echo "Generated code is out of date with proto/ — run 'buf generate' and commit the result."
+            exit 1
+          fi
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: python codegen (fail if committed worker/gen output is stale)
+        run: |
+          pip install -q grpcio-tools
+          THIRD_PARTY_DIR="$(mktemp -d)"
+          buf export buf.build/googleapis/googleapis -o "$THIRD_PARTY_DIR"
+          rm -rf worker/gen
+          mkdir -p worker/gen
+          python -m grpc_tools.protoc \
+            -I proto -I "$THIRD_PARTY_DIR" \
+            --python_out=worker/gen --grpc_python_out=worker/gen --pyi_out=worker/gen \
+            proto/orionqueue/v1/job.proto proto/orionqueue/v1/job_service.proto \
+            proto/orionqueue/v1/worker.proto proto/orionqueue/v1/worker_service.proto
+          touch worker/gen/__init__.py worker/gen/orionqueue/__init__.py worker/gen/orionqueue/v1/__init__.py
+          if ! git diff --exit-code -- worker/gen; then
+            echo "worker/gen is out of date with proto/ — run 'scripts/proto-gen-python.sh' and commit the result."
             exit 1
           fi
 

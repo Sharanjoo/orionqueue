@@ -10,32 +10,40 @@ import (
 	"testing"
 
 	"github.com/Sharanjoo/orionqueue/internal/jobs"
+	"github.com/Sharanjoo/orionqueue/internal/leases"
+	"github.com/Sharanjoo/orionqueue/internal/workers"
 )
 
 // newTestGatewayServer builds a real httptest.Server serving the REST
-// gateway on top of a fresh in-memory job store, exercising the actual
-// grpc-gateway wiring (proto <-> JSON, path parameter extraction, HTTP
-// status mapping) end to end — not just direct Go method calls into
-// JobServer, which job_server_test.go already covers.
-func newTestGatewayServer(t *testing.T) *httptest.Server {
+// gateway on top of fresh in-memory job/worker stores, exercising the
+// actual grpc-gateway wiring (proto <-> JSON, path parameter extraction,
+// HTTP status mapping) end to end — not just direct Go method calls into
+// JobServer/WorkerServer, which job_server_test.go and
+// worker_server_test.go already cover. Also returns the workers.Service
+// directly, since RegisterWorker is deliberately gRPC-only (see
+// proto/orionqueue/v1/worker_service.proto) — a test that wants a worker
+// to exist before hitting the REST-exposed ListWorkers has no REST path
+// to create one and registers through the service instead.
+func newTestGatewayServer(t *testing.T) (*httptest.Server, *workers.Service) {
 	t.Helper()
-	repo := jobs.NewMemoryRepository()
-	svc := jobs.NewService(repo)
+	jobSvc := jobs.NewService(jobs.NewMemoryRepository())
+	workerSvc := workers.NewService(workers.NewMemoryRepository(), leases.NewFakeManager())
 	logger := slog.New(slog.NewJSONHandler(discardWriter{}, nil))
-	jobServer := NewJobServer(svc, logger)
+	jobServer := NewJobServer(jobSvc, logger)
+	workerServer := NewWorkerServer(workerSvc, logger)
 
-	mux, err := NewGatewayMux(context.Background(), jobServer)
+	mux, err := NewGatewayMux(context.Background(), jobServer, workerServer)
 	if err != nil {
 		t.Fatalf("NewGatewayMux returned error: %v", err)
 	}
 
 	srv := httptest.NewServer(WithRequestID(logger, mux))
 	t.Cleanup(srv.Close)
-	return srv
+	return srv, workerSvc
 }
 
 func TestRESTSubmitAndGetJobRoundTrip(t *testing.T) {
-	srv := newTestGatewayServer(t)
+	srv, _ := newTestGatewayServer(t)
 
 	submitBody := map[string]any{
 		"name":  "train-resnet",
@@ -108,7 +116,7 @@ func TestRESTSubmitAndGetJobRoundTrip(t *testing.T) {
 }
 
 func TestRESTGetJobMissingReturns404(t *testing.T) {
-	srv := newTestGatewayServer(t)
+	srv, _ := newTestGatewayServer(t)
 
 	resp, err := http.Get(srv.URL + "/api/v1/jobs/does-not-exist")
 	if err != nil {
@@ -122,7 +130,7 @@ func TestRESTGetJobMissingReturns404(t *testing.T) {
 }
 
 func TestRESTSubmitInvalidJobReturns400(t *testing.T) {
-	srv := newTestGatewayServer(t)
+	srv, _ := newTestGatewayServer(t)
 
 	resp, err := http.Post(srv.URL+"/api/v1/jobs", "application/json", bytes.NewReader([]byte(`{}`)))
 	if err != nil {
@@ -136,7 +144,7 @@ func TestRESTSubmitInvalidJobReturns400(t *testing.T) {
 }
 
 func TestRESTCancelAndListJobs(t *testing.T) {
-	srv := newTestGatewayServer(t)
+	srv, _ := newTestGatewayServer(t)
 
 	submitResp, err := http.Post(srv.URL+"/api/v1/jobs", "application/json", bytes.NewReader([]byte(
 		`{"name":"j1","owner":"sharan","image":"img"}`,
@@ -182,5 +190,52 @@ func TestRESTCancelAndListJobs(t *testing.T) {
 	}
 	if list.Jobs[0].State != "JOB_STATE_CANCELLED" {
 		t.Errorf("state = %q, want %q", list.Jobs[0].State, "JOB_STATE_CANCELLED")
+	}
+}
+
+func TestRESTListWorkers(t *testing.T) {
+	srv, workerSvc := newTestGatewayServer(t)
+
+	if _, err := workerSvc.Register(context.Background(), workers.RegisterInput{
+		Hostname:            "worker-1.local",
+		CPUCapacity:         8,
+		MemoryCapacityBytes: 32 << 30,
+		GPUs:                []workers.GPU{{DeviceIndex: 0, UUID: "GPU-fake-0", TotalMemoryBytes: 16 << 30}},
+	}); err != nil {
+		t.Fatalf("Register returned error: %v", err)
+	}
+
+	resp, err := http.Get(srv.URL + "/api/v1/workers")
+	if err != nil {
+		t.Fatalf("GET /api/v1/workers failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	var list struct {
+		Workers []struct {
+			Hostname string `json:"hostname"`
+			Status   string `json:"status"`
+			Gpus     []struct {
+				Uuid string `json:"uuid"`
+			} `json:"gpus"`
+		} `json:"workers"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if len(list.Workers) != 1 {
+		t.Fatalf("expected 1 worker, got %d", len(list.Workers))
+	}
+	if list.Workers[0].Hostname != "worker-1.local" {
+		t.Errorf("hostname = %q, want %q", list.Workers[0].Hostname, "worker-1.local")
+	}
+	if list.Workers[0].Status != "WORKER_STATUS_ACTIVE" {
+		t.Errorf("status = %q, want %q", list.Workers[0].Status, "WORKER_STATUS_ACTIVE")
+	}
+	if len(list.Workers[0].Gpus) != 1 || list.Workers[0].Gpus[0].Uuid != "GPU-fake-0" {
+		t.Errorf("gpus = %+v, want a single GPU-fake-0 entry (GPU inventory visible via REST)", list.Workers[0].Gpus)
 	}
 }

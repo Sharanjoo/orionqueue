@@ -10,13 +10,16 @@ import (
 )
 
 // NewGatewayMux builds a grpc-gateway *runtime.ServeMux that serves
-// OrionQueue's REST API by calling directly into jobServer in-process —
-// no network hop to a separate gRPC listener. The same JobServer instance
-// also backs the real gRPC server registered in cmd/api/main.go, so REST
-// and gRPC clients see identical behavior; this is what "REST and gRPC"
-// in the project brief means in practice, not two independently
-// maintained implementations.
-func NewGatewayMux(ctx context.Context, jobServer pb.JobServiceServer) (*runtime.ServeMux, error) {
+// OrionQueue's REST API by calling directly into jobServer/workerServer
+// in-process — no network hop to a separate gRPC listener. The same
+// server instances also back the real gRPC server registered in
+// cmd/api/main.go, so REST and gRPC clients see identical behavior; this
+// is what "REST and gRPC" in the project brief means in practice, not two
+// independently maintained implementations. Only WorkerService.ListWorkers
+// has a REST binding (see proto/orionqueue/v1/worker_service.proto) —
+// RegisterWorker/WorkerHeartbeat are gRPC-only, so they're registered on
+// the gRPC server in cmd/api/main.go but never appear here.
+func NewGatewayMux(ctx context.Context, jobServer pb.JobServiceServer, workerServer pb.WorkerServiceServer) (*runtime.ServeMux, error) {
 	mux := runtime.NewServeMux(
 		// UseProtoNames keeps REST JSON field names matching the .proto
 		// (snake_case, e.g. "gpu_count") rather than protojson's default
@@ -29,6 +32,9 @@ func NewGatewayMux(ctx context.Context, jobServer pb.JobServiceServer) (*runtime
 		}),
 	)
 	if err := pb.RegisterJobServiceHandlerServer(ctx, mux, jobServer); err != nil {
+		return nil, err
+	}
+	if err := pb.RegisterWorkerServiceHandlerServer(ctx, mux, workerServer); err != nil {
 		return nil, err
 	}
 	return mux, nil

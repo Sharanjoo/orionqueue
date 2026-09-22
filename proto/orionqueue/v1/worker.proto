@@ -1,0 +1,59 @@
+syntax = "proto3";
+
+package orionqueue.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/Sharanjoo/orionqueue/internal/api/gen/orionqueue/v1;orionqueuev1";
+
+// WorkerStatus mirrors workers.Status in internal/workers/worker.go.
+// Phase 4 only ever produces ACTIVE and LOST — see
+// docs/architecture/system-overview.md for why a SUSPECT state is
+// deferred rather than implemented now.
+enum WorkerStatus {
+  WORKER_STATUS_UNSPECIFIED = 0;
+  WORKER_STATUS_ACTIVE = 1;
+  WORKER_STATUS_LOST = 2;
+}
+
+// GPUHealthState mirrors gpus.HealthState.
+enum GPUHealthState {
+  GPU_HEALTH_STATE_UNSPECIFIED = 0;
+  GPU_HEALTH_STATE_HEALTHY = 1;
+  GPU_HEALTH_STATE_DEGRADED = 2;
+  GPU_HEALTH_STATE_UNHEALTHY = 3;
+}
+
+// GPU is one device (real or, in fake-GPU mode, simulated — see
+// ADR-0003) in a worker's inventory.
+message GPU {
+  string id = 1;
+  int32 device_index = 2;
+  string uuid = 3;
+  int64 total_memory_bytes = 4;
+  int64 allocated_memory_bytes = 5;
+  double utilization_percent = 6;
+  // temperature_celsius is unset (not just zero) when unavailable —
+  // fake-GPU mode never sets it, real NVML mode does from Phase 9.
+  optional double temperature_celsius = 7;
+  string mig_profile = 8;
+  GPUHealthState health_state = 9;
+}
+
+// Worker is OrionQueue's worker record as seen through the API.
+message Worker {
+  string id = 1;
+  string hostname = 2;
+  WorkerStatus status = 3;
+
+  double cpu_capacity = 4;
+  int64 memory_capacity_bytes = 5;
+  repeated GPU gpus = 6;
+
+  string software_version = 7;
+  map<string, string> labels = 8;
+  repeated string running_job_ids = 9;
+
+  google.protobuf.Timestamp registered_at = 10;
+  google.protobuf.Timestamp last_heartbeat_at = 11;
+}

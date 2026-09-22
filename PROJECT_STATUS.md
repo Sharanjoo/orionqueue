@@ -1,17 +1,16 @@
 # OrionQueue — Project Status
 
-Last updated: 2026-09-22 (Phase 3)
+Last updated: 2026-09-22 (Phase 4)
 
 ## Current phase
 
-**Phase 3 — Persistence.** Complete.
+**Phase 4 — Worker registration and heartbeats.** Complete.
 
-Job state is now durable: `cmd/api` is backed by PostgreSQL instead of an
-in-memory store, and job state survives an API restart — verified by
-actually submitting a job, restarting the `api` container, and confirming
-the job was still retrievable afterward, not just by unit tests. See
-[docs/architecture/system-overview.md](docs/architecture/system-overview.md)
-for the design and [README.md](README.md) for runnable examples.
+The Python worker agent registers with the control plane, reports
+simulated GPU inventory, and heartbeats on an etcd-backed lease. A
+background watcher in `cmd/api` marks a worker `LOST` automatically the
+moment its lease expires without a renewing heartbeat — verified against
+real infrastructure, not just unit tests (see Measured results below).
 
 ## Phase tracker
 
@@ -21,7 +20,7 @@ for the design and [README.md](README.md) for runnable examples.
 | 1 | Project foundation | Done |
 | 2 | Protobuf and API layer | Done |
 | 3 | Persistence (PostgreSQL) | Done |
-| 4 | Worker registration & heartbeats | Not started |
+| 4 | Worker registration & heartbeats | Done |
 | 5 | Scheduler | Not started |
 | 6 | Job execution | Not started |
 | 7 | Cancellation and preemption | Not started |
@@ -36,120 +35,137 @@ for the design and [README.md](README.md) for runnable examples.
 ## Implemented vs. simulated vs. not yet validated
 
 - **Implemented:**
-  - `migrations/0001_create_jobs`, `0002_create_job_events`: PostgreSQL
-    schema with a `CHECK` constraint mirroring `jobs.State`, a partial
-    unique index on `submission_id` enforcing idempotent submission at
-    the database level, and indexes supporting `ListJobs`' state filter
-    and pagination. Applied via `golang-migrate`, embedded in the Go
-    binary (`migrations/embed.go`) so tests don't depend on a filesystem
-    path, and available as plain SQL files for the `migrate` CLI/Docker
-    image.
-  - `internal/persistence`: `Connect` (pooled, with bounded startup
-    retry — Postgres inside Compose can still be starting when `api`'s
-    own container is already up), `RunMigrations`, and `JobRepository`,
-    a full `jobs.Repository` implementation with keyset pagination
-    (more scalable than the in-memory repository's OFFSET-based scheme)
-    and transactional event recording to `job_events` on every
-    submission and state transition.
-  - `cmd/api` now requires a reachable, migrated PostgreSQL to start —
-    `jobs.MemoryRepository` (Phase 2) is no longer wired into it, though
-    it remains in place and in active use by `internal/jobs` and
-    `internal/api`'s fast, Docker-free unit/gateway tests. `/readyz` now
-    performs a real database ping instead of always returning ready.
-  - `docker-compose.yml`: a `postgres` service and a one-shot `migrate`
-    service (the official `migrate/migrate` image); `api` waits for both
-    (`depends_on` with `service_healthy` / `service_completed_successfully`)
-    so `docker compose up` migrates and connects automatically.
-  - `scripts/migrate.sh` (up/down/version, installs the `migrate` CLI on
-    first use) and `scripts/test-integration.sh`.
-- **Simulated:** nothing yet — no fake-GPU/fake-worker code exists until
-  Phase 4/6.
-- **Not yet validated:** nothing GPU- or cloud-related exists yet.
+  - `migrations/0003_create_workers`: `workers` and `gpus` tables, with a
+    state-validating `CHECK` constraint and indexes for status filtering
+    and pagination.
+  - `proto/orionqueue/v1/{worker,worker_service}.proto`: `Worker`/`GPU`
+    messages and `WorkerService` (RegisterWorker, WorkerHeartbeat —
+    gRPC-only by design, no REST binding, since only the worker agent
+    calls them; ListWorkers — REST-exposed at `GET /api/v1/workers`).
+  - `internal/leases`: a `Manager` interface over etcd leases (Grant,
+    Renew, Revoke, WatchExpirations-on-key-deletion), a real
+    `EtcdManager`, and a `FakeManager` for fast unit tests.
+  - `internal/workers`: domain model, validation, an in-memory
+    `Repository`, and a `Service` implementing registration (grants an
+    etcd lease), heartbeat (renews it, self-heals by granting a fresh
+    lease if the old one already expired), `MarkLost`, and
+    `WatchExpirations` — the background loop that makes worker-loss
+    detection automatic.
+  - `internal/persistence.WorkerRepository`: PostgreSQL-backed
+    `workers.Repository`, handling the one-to-many `gpus` table
+    (replace-on-write) inside the same transaction as the worker row.
+  - `internal/api`: `WorkerServer` (gRPC adapter), Worker/GPU
+    proto↔domain conversion, and REST gateway wiring for
+    `WorkerService.ListWorkers` alongside `JobService`.
+  - `cmd/api`: connects to etcd (with the same bounded-retry startup
+    pattern as Postgres), registers `WorkerService`, and runs the
+    expiration watcher as a background goroutine for the process
+    lifetime; `/readyz` now also checks etcd connectivity.
+  - `docker-compose.yml`: an `etcd` service (single-node,
+    `gcr.io/etcd-development/etcd:v3.5.17`); `api` waits for it to be
+    healthy; `worker` depends on `api` being healthy before registering.
+  - Python worker agent: `gpu/fake.py` (deterministic simulated GPU
+    inventory, seeded by worker ID so it's reproducible),
+    `agent/grpc_client.py` (gRPC client for RegisterWorker/WorkerHeartbeat),
+    and a rewritten `agent/main.py` — registers with retry/backoff if the
+    control plane is briefly unreachable, then heartbeats on the interval
+    the server assigns, logging and continuing past individual heartbeat
+    failures rather than crashing.
+  - `worker/gen/`: Python gRPC client stubs, generated by
+    `scripts/proto-gen-python.sh` and committed (mirroring
+    `internal/api/gen/`'s pattern), with a CI drift check.
+- **Simulated:** all GPU inventory (count, UUIDs, memory) — clearly
+  labeled `simulated: true`-equivalent at the source (fake UUIDs are
+  prefixed `GPU-fake-`, and worker agent logs tag GPU discovery
+  `"simulated": true`). No job execution exists yet (Phase 6), so GPU
+  utilization is always 0 and never changes.
+- **Not yet validated:** real NVML/GPU discovery (Phase 9); scheduler
+  leader election over etcd (Phase 5) — etcd is used for worker leases
+  only so far.
+- **Explicit Phase 4 scope boundary (not a gap):** worker status is only
+  ever `ACTIVE` or `LOST` — a `SUSPECT` state (heartbeat running late but
+  the lease hasn't expired yet) is a documented possible refinement for
+  later, not implemented now, since lease-based detection alone already
+  satisfies this phase's acceptance criteria.
 
 ## Known issues
 
-- **Local port collisions, both discovered by actually running things,
-  not assumed:**
-  - Port 8080: already bound by an unrelated Airflow instance on this
-    machine (Phase 1) — `api`/`scheduler` default to 7080/7081.
-  - Port 5432: already bound by an unrelated local Postgres on this
-    machine (Phase 3) — `docker-compose.yml`'s `postgres` service maps
-    to host port **5433** instead (container-internal traffic between
-    Compose services is unaffected, since that uses `postgres:5432` over
-    the Compose network). Anyone running the native (non-Docker) dev
-    path needs to set `ORIONQUEUE_DATABASE_URL` to match — documented in
-    README.md's Quick Start, since the package default (`localhost:5432`,
-    the standard Postgres port) intentionally assumes a clean machine
-    rather than baking in this one machine's workaround.
-- Carried over from Phase 1/2 and unchanged: no local `golangci-lint` or
-  `gcc` (`-race` doesn't run locally, does in CI); Windows SIGTERM
-  delivery is best-effort for manual testing (`os.Interrupt`/Ctrl+C is
-  what's actually exercised).
-- `internal/persistence` shows 0% coverage under `go test ./...` — its
-  logic is exercised entirely by `tests/integration` (tagged
-  `integration`, requires Docker), not by the default unit-test run. This
-  is intentional (see `docs/architecture/system-overview.md`'s testing
-  strategy: DB-touching code belongs in integration tests, not mocked
-  unit tests), not an oversight.
+- A real packaging bug was found and fixed during this phase: the first
+  version of `worker/agent/grpc_client.py` located `worker/gen` via a
+  `sys.path` hack relative to the *source file's own location*, which
+  only resolves correctly under an editable (`pip install -e .`) install.
+  A real (non-editable) install — exactly what `deploy/docker/worker.Dockerfile`
+  does — would have silently failed to import the generated gRPC stubs.
+  Fixed by making `orionqueue` a properly installed package (a second
+  setuptools search root pointed at `worker/gen`) instead of a path hack,
+  and reverified by simulating a true non-editable install in a scratch
+  venv before trusting it, not just re-running the editable-install tests.
+- Carried over, unchanged: port collisions (8080, 5432) documented in
+  earlier phases; no local `golangci-lint`/`gcc`; Windows SIGTERM caveat;
+  `internal/persistence` shows 0% coverage under the default (non-Docker)
+  test run by design — it's exercised by `tests/integration` instead.
 
 ## Measured results
 
 All of the following are actual outputs from this session:
 
-- `go test ./... -cover` (no Docker required): all packages pass.
-  Coverage: `internal/config` 98.1%, `internal/health` 81.6%,
-  `internal/jobs` 90.5%, `internal/api` 89.9%, `internal/logging` 87.5%.
-- `go test ./tests/integration/... -tags=integration` (real, disposable
-  PostgreSQL via testcontainers-go): **10/10 tests passing**, ~90s total.
-  Covers create/get, idempotent submission enforced at the database level
-  (not just in-process), keyset-paginated + state-filtered listing,
-  transactional update with automatic rollback on error, `job_events`
-  rows recorded for both submission and state-change, and — the most
-  direct possible test of this phase's acceptance bar —
-  `JobSurvivesReconnection`, which writes through one connection pool and
-  reads back through a second, independent one against the same database.
-  This test suite caught one real bug during development: nil
-  `Command`/`AssignedWorkerIDs` slices were sent as SQL `NULL` rather
-  than `{}`, violating a `NOT NULL` constraint — fixed, then reverified.
-- `scripts/migrate.sh up` / `down 2` / `version`, run directly against a
-  live container (not just through the embedded test runner): applied
-  both migrations, reported version `2`, rolled both back cleanly in
-  reverse order, confirmed via `psql \dt` at every step.
-- Full-stack manual verification via `docker compose up`: `postgres`
-  reached Docker-healthy, `migrate` ran and exited 0, `api` started and
-  reported both Docker-healthy and `/readyz: {"status":"ready"}`
-  (a real DB ping, not a stub). Submitted a job over REST, ran
-  `docker compose restart api`, and confirmed `GET /api/v1/jobs/{id}`
-  still returned the same job afterward — job state survived the
-  restart. Stack was torn down cleanly (`docker compose down -v`)
-  afterward.
+- `go test ./... -cover` (no Docker): all packages pass. New this phase:
+  `internal/leases` 59.1%, `internal/workers` 78.7%; `internal/api` 88.5%,
+  `internal/config` 96.8% (both slightly changed by this phase's
+  additions).
+- `go test ./tests/integration/... -tags=integration`: **21/21 tests
+  passing** (~165s), up from Phase 3's 10 — 6 new `WorkerRepository`
+  tests against real Postgres (including one that reconnects through an
+  independent pool to prove a worker survives what a restart would do)
+  and 5 new tests against a **real, disposable etcd container**,
+  including one that grants a short lease, never renews it, and waits
+  out etcd's own expiration mechanism rather than simulating it.
+- 41 Python tests passing (`pytest`), up from 16 before this phase: fake
+  GPU determinism/validation, config, the gRPC client's proto conversion,
+  and `main.py`'s registration-retry and heartbeat-loop logic (tested
+  against a duck-typed fake gRPC client, no live server needed for unit
+  tests).
+- `ruff`, `black --check`, `gofmt -l`, `go vet`, `buf lint`: all clean.
+- **Full live-stack verification**, not just automated tests:
+  - `docker compose up`: etcd, Postgres, migrate, api, scheduler, worker,
+    frontend all reached a healthy/running state, in dependency order.
+  - Worker agent log showed real registration (`worker_id` assigned by
+    the server) and heartbeats every 5 seconds, matching the server's
+    told interval exactly.
+  - `GET /api/v1/workers` showed the real worker with 2 simulated GPUs
+    (`GPU-fake-...` UUIDs), correct capacities, and status `ACTIVE`.
+  - `docker compose stop worker`, then polling `GET /api/v1/workers`
+    every 3s: status flipped to `LOST` on the 4th check (~9–12 seconds
+    after the stop) — fully automatic, no manual intervention beyond
+    stopping the container.
+
+Nothing about scheduling, job execution, checkpointing, or real GPU/cloud
+behavior is measured yet — none of that exists until later phases.
 
 ## Assumptions and environment notes
 
-- Carried over from Phase 0–2: Windows 11 dev machine, no local GPU,
-  `make`/`protoc`/`etcd`/`psql`/`golangci-lint`/`gcc` not installed
-  natively (see `docs/adr/0000-local-tooling-adaptations.md`).
-- Added this phase: `github.com/jackc/pgx/v5` (driver + pool),
-  `github.com/golang-migrate/migrate/v4` (migrations, embedded via
-  `iofs`), `github.com/testcontainers/testcontainers-go` +
-  its `postgres` module (integration tests only, gated behind the
-  `integration` build tag so the default `go build`/`go test ./...`
-  never requires Docker or these packages at all).
-- `go.mod`/`go.sum` cover both the default and `-tags=integration` build
-  graphs; `go mod tidy` alone does not reliably keep tag-gated
-  dependencies (this Go toolchain's `go mod tidy` has no `-tags` flag),
-  so verifying `go build -tags=integration ./...` after any dependency
-  change is part of this project's own working process now, not just a
-  one-off fix.
+- Carried over from Phase 0–3 (Windows 11 dev machine, no local GPU,
+  missing `make`/`protoc`/`gcc`/`golangci-lint`, port workarounds for
+  8080/5432) — see `docs/adr/0000-local-tooling-adaptations.md`.
+- Added this phase: `go.etcd.io/etcd/client/v3` (Go etcd client),
+  `github.com/testcontainers/testcontainers-go/modules/etcd` (integration
+  tests only), `grpcio`/`grpcio-tools`/`googleapis-common-protos` on the
+  Python side. `go.mod`/`go.sum` continue to require verifying both
+  `go build ./...` and `go build -tags=integration ./...` after dependency
+  changes (this Go toolchain's `go mod tidy` has no `-tags` flag — noted
+  in Phase 3, still true).
+- etcd port 2379 was confirmed free on this dev machine (checked
+  directly, unlike port 5432/8080 which weren't) — no remap needed.
 - Per explicit user instruction, Claude does not run `git commit` or
   `git push` in this repo — every phase's report includes the exact
-  commands for the user to run instead. Phases 0–2 are already committed
+  commands for the user to run instead. Phases 0–3 are already committed
   and pushed by the user.
 
 ## Next phase
 
-**Phase 4 — Worker registration and heartbeats**: worker/GPU/lease
-schema and migrations, a `workers`-facing gRPC service (RegisterWorker,
-WorkerHeartbeat), etcd-backed leases with expiration detection, and the
-Python worker agent's first real registration/heartbeat loop (replacing
-Phase 1's idle placeholder loop) against fake GPU inventory.
+**Phase 5 — Scheduler**: priority queue with aging-based fairness,
+GPU/CPU/memory eligibility filtering against real worker capacity from
+Phase 4, gang scheduling for multi-GPU jobs, scheduler leader election
+over etcd (the second use of etcd this project adds, per ADR-0001),
+scheduling-decision persistence, and wiring `AssignJob` so a submitted job
+actually lands on a worker for the first time.

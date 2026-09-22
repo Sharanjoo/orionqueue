@@ -1,0 +1,66 @@
+syntax = "proto3";
+
+package orionqueue.v1;
+
+import "google/api/annotations.proto";
+import "orionqueue/v1/worker.proto";
+
+option go_package = "github.com/Sharanjoo/orionqueue/internal/api/gen/orionqueue/v1;orionqueuev1";
+
+message RegisterWorkerRequest {
+  string hostname = 1;
+  double cpu_capacity = 2;
+  int64 memory_capacity_bytes = 3;
+  repeated GPU gpus = 4;
+  string software_version = 5;
+  map<string, string> labels = 6;
+}
+
+message RegisterWorkerResponse {
+  Worker worker = 1;
+  // heartbeat_interval_seconds tells the worker agent how often to call
+  // WorkerHeartbeat to keep its etcd lease alive; missing that window
+  // is what Phase 4's automatic expiration detection reacts to.
+  int64 heartbeat_interval_seconds = 2;
+}
+
+message WorkerHeartbeatRequest {
+  string worker_id = 1;
+  // gpus refreshes the worker's reported GPU inventory/utilization on
+  // every heartbeat; empty means "unchanged since registration."
+  repeated GPU gpus = 2;
+  repeated string running_job_ids = 3;
+}
+
+message WorkerHeartbeatResponse {
+  Worker worker = 1;
+}
+
+message ListWorkersRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+  WorkerStatus status_filter = 3;
+}
+
+message ListWorkersResponse {
+  repeated Worker workers = 1;
+  string next_page_token = 2;
+}
+
+// WorkerService is how worker agents register and heartbeat with the
+// control plane (RegisterWorker, WorkerHeartbeat — internal, gRPC-only,
+// no REST binding, since only the Python worker agent calls them), and
+// how anyone can list the current worker fleet (ListWorkers — REST too,
+// GET /api/v1/workers). GetClusterCapacity is added in Phase 5, once the
+// scheduler needs an aggregated view for placement decisions.
+service WorkerService {
+  rpc RegisterWorker(RegisterWorkerRequest) returns (RegisterWorkerResponse);
+
+  rpc WorkerHeartbeat(WorkerHeartbeatRequest) returns (WorkerHeartbeatResponse);
+
+  rpc ListWorkers(ListWorkersRequest) returns (ListWorkersResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/workers"
+    };
+  }
+}

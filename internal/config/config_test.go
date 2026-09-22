@@ -106,6 +106,44 @@ func TestValidateDoesNotRequireDatabaseURLForNonAPIServices(t *testing.T) {
 	}
 }
 
+func TestDefaultEtcdEndpointsIsSetForAPIOnly(t *testing.T) {
+	api := Defaults("orionqueue-api")
+	if len(api.EtcdEndpoints) == 0 {
+		t.Error("expected orionqueue-api to have non-empty default EtcdEndpoints")
+	}
+	scheduler := Defaults("orionqueue-scheduler")
+	if len(scheduler.EtcdEndpoints) != 0 {
+		t.Errorf("expected orionqueue-scheduler to have empty default EtcdEndpoints, got %v", scheduler.EtcdEndpoints)
+	}
+}
+
+func TestLoadSplitsEtcdEndpointsOnComma(t *testing.T) {
+	t.Setenv("ORIONQUEUE_ETCD_ENDPOINTS", "etcd-1:2379,etcd-2:2379,etcd-3:2379")
+	cfg, err := Load("orionqueue-api")
+	if err != nil {
+		t.Fatalf("Load returned unexpected error: %v", err)
+	}
+	want := []string{"etcd-1:2379", "etcd-2:2379", "etcd-3:2379"}
+	if len(cfg.EtcdEndpoints) != len(want) {
+		t.Fatalf("EtcdEndpoints = %v, want %v", cfg.EtcdEndpoints, want)
+	}
+	for i, ep := range want {
+		if cfg.EtcdEndpoints[i] != ep {
+			t.Errorf("EtcdEndpoints[%d] = %q, want %q", i, cfg.EtcdEndpoints[i], ep)
+		}
+	}
+}
+
+func TestLoadRejectsEmptyEtcdEndpointsForAPI(t *testing.T) {
+	cfg := Config{
+		ServiceName: "orionqueue-api", Environment: "local", HTTPAddr: ":7080", LogLevel: "info",
+		DatabaseURL: "postgres://u:p@localhost/db",
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected Validate to reject empty EtcdEndpoints for orionqueue-api")
+	}
+}
+
 func TestLoadIgnoresEmptyEnvValues(t *testing.T) {
 	t.Setenv("ORIONQUEUE_ENVIRONMENT", "")
 

@@ -1,8 +1,30 @@
-# Phase 3 adds PostgreSQL (durable job state) and a one-shot migration
-# step. etcd, Prometheus, Grafana, MinIO, and multiple fake workers are
-# added in Phase 12 (see docs/adr/0006-kubernetes-deployment-strategy.md
+# Phase 3 added PostgreSQL (durable job state) and a one-shot migration
+# step. Phase 4 adds etcd (worker liveness leases — see ADR-0001 and
+# internal/leases). Prometheus, Grafana, MinIO, and multiple fake workers
+# are added in Phase 12 (see docs/adr/0006-kubernetes-deployment-strategy.md
 # for the same fake-worker-first philosophy applied to Kubernetes).
 services:
+  etcd:
+    image: gcr.io/etcd-development/etcd:v3.5.17
+    command:
+      - etcd
+      - --name=orionqueue-etcd
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls=http://etcd:2380
+      - --initial-cluster=orionqueue-etcd=http://etcd:2380
+    ports:
+      - "2379:2379" # exposed for local debugging (etcdctl); not required by other services, which talk to "etcd:2379" over the compose network
+    volumes:
+      - orionqueue-etcd-data:/etcd-data
+    healthcheck:
+      test: ["CMD", "etcdctl", "--endpoints=http://127.0.0.1:2379", "endpoint", "health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   postgres:
     image: postgres:16-alpine
     environment:
@@ -43,6 +65,7 @@ services:
     environment:
       ORIONQUEUE_ENVIRONMENT: compose
       ORIONQUEUE_DATABASE_URL: postgres://orionqueue:orionqueue@postgres:5432/orionqueue?sslmode=disable
+      ORIONQUEUE_ETCD_ENDPOINTS: etcd:2379
     ports:
       - "7080:7080" # REST gateway + /healthz, /readyz
       - "9080:9080" # gRPC (server reflection on, so grpcurl works with no local .proto files)
@@ -51,6 +74,8 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      etcd:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:7080/healthz"]
       interval: 10s
@@ -80,6 +105,10 @@ services:
     environment:
       ORIONQUEUE_ENVIRONMENT: compose
       ORIONQUEUE_WORKER_ID: worker-compose-1
+      ORIONQUEUE_API_GRPC_ADDR: api:9080
+    depends_on:
+      api:
+        condition: service_healthy
 
   frontend:
     build:
@@ -91,3 +120,4 @@ services:
 
 volumes:
   orionqueue-postgres-data:
+  orionqueue-etcd-data:

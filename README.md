@@ -1,12 +1,14 @@
 # OrionQueue — Distributed GPU Workload Orchestrator
 
-> **Status: Phase 3 (persistence) complete.** Jobs can be submitted, looked
-> up, listed, cancelled, and retried through both REST and real gRPC, backed
-> by PostgreSQL — job state survives an API restart, verified by actually
-> restarting the API container against a real database and confirming a
-> submitted job was still there. There is no scheduler, worker execution, or
-> GPU simulation wired in yet. See [PROJECT_STATUS.md](PROJECT_STATUS.md) for
-> the live phase tracker and
+> **Status: Phase 4 (worker registration & heartbeats) complete.** Jobs can be
+> submitted, looked up, listed, cancelled, and retried through both REST and
+> real gRPC, backed by PostgreSQL. The Python worker agent now registers with
+> the control plane, reports simulated GPU inventory, and heartbeats on an
+> etcd-backed lease — verified live: a real worker registered with 2
+> simulated GPUs, that inventory showed up over REST, and killing the worker
+> got it marked `LOST` automatically about 10 seconds later with no polling
+> script involved. There is no scheduler or job execution wired in yet. See
+> [PROJECT_STATUS.md](PROJECT_STATUS.md) for the live phase tracker and
 > [docs/architecture/system-overview.md](docs/architecture/system-overview.md)
 > for the full design.
 
@@ -34,11 +36,11 @@ modes relate.
 ## Architecture at a glance
 
 - **Control plane (Go):** gRPC services + REST gateway, PostgreSQL for durable
-  state, etcd for scheduler leader election and short leases, Prometheus
-  metrics, structured JSON logs.
-- **Worker plane (Python):** gRPC client agent, GPU discovery (NVML when
-  available, deterministic fake-GPU mode otherwise), heartbeats, checkpoint
-  read/write.
+  state, etcd for worker liveness leases (and, from Phase 5, scheduler leader
+  election), Prometheus metrics, structured JSON logs.
+- **Worker plane (Python):** gRPC client agent, GPU discovery (deterministic
+  fake-GPU mode today; NVML for real hardware from Phase 9), registration and
+  heartbeats against the control plane, checkpoint read/write (Phase 8).
 - **Frontend (React + TypeScript):** jobs, workers, cluster capacity, and
   failure/recovery views backed by the real API.
 - **Infra:** Docker Compose for local dev, Kubernetes manifests for cluster
@@ -68,14 +70,15 @@ Requires Go 1.27+, Python 3.11+, Node 20+, and Docker.
 
 ```bash
 docker compose up --build
-# postgres:  durable job state (Postgres healthcheck gates everything below)
+# postgres:  durable job/worker state (Postgres healthcheck gates everything below)
+# etcd:      worker liveness leases (RegisterWorker/WorkerHeartbeat) — see ADR-0001
 # migrate:   applies migrations/*.sql once, then exits — api waits for this
 # api:       http://localhost:7080 (REST + health), :9080 (gRPC, reflection on)
 # scheduler: http://localhost:7081/healthz, /readyz
 # frontend:  http://localhost:8088
-# worker:    logs only (no HTTP endpoint yet)
+# worker:    registers with api and heartbeats — see its logs, no HTTP endpoint
 
-docker compose down          # add -v to also drop the postgres volume (wipes job history)
+docker compose down          # add -v to also drop the postgres/etcd volumes (wipes job/worker history)
 ```
 
 **Submit and manage a job (REST):**
@@ -96,12 +99,32 @@ curl -X POST http://localhost:7080/api/v1/jobs/<id>/retry -d '{}'   # only valid
 Submitting twice with the same `submission_id` field returns the original
 job instead of creating a duplicate (idempotent submission).
 
+**View the worker fleet and its GPU inventory (REST):**
+
+```bash
+curl http://localhost:7080/api/v1/workers
+# -> {"workers": [{"id": "worker-...", "hostname": "...", "status": "WORKER_STATUS_ACTIVE",
+#      "gpus": [{"uuid": "GPU-fake-...", "total_memory_bytes": "...", ...}], ...}]}
+```
+
+`RegisterWorker`/`WorkerHeartbeat` are gRPC-only (no REST binding — only the
+worker agent calls them); `ListWorkers` is REST-exposed. Every GPU value
+comes from the deterministic fake-GPU simulator (see
+[ADR-0003](docs/adr/0003-fake-vs-real-gpu.md)) unless run on real hardware.
+
+**See automatic worker-loss detection:** stop the worker (`docker compose
+stop worker`) and poll `GET /api/v1/workers` — its `status` flips from
+`WORKER_STATUS_ACTIVE` to `WORKER_STATUS_LOST` on its own, once its etcd
+lease expires without a renewing heartbeat (default: ~20s after the last
+heartbeat, no polling or external script required). Restart it with
+`docker compose start worker` to see it register again as a new worker.
+
 **Or call the real gRPC service directly**, e.g. with
 [grpcurl](https://github.com/fullstorydev/grpcurl) (server reflection is on,
 so no local `.proto` files are needed):
 
 ```bash
-grpcurl -plaintext 127.0.0.1:9080 list orionqueue.v1.JobService
+grpcurl -plaintext 127.0.0.1:9080 list orionqueue.v1.WorkerService
 grpcurl -plaintext -d '{"name":"j1","owner":"you","image":"img"}' 127.0.0.1:9080 orionqueue.v1.JobService/SubmitJob
 ```
 
@@ -109,23 +132,24 @@ OpenAPI/Swagger definitions generated from the same protobuf source are at
 `docs/api/orionqueue/v1/*.swagger.json`.
 
 **Or run each service directly, without Docker.** `cmd/api` needs a running
-Postgres with migrations applied — the easiest way is
-`docker compose up -d postgres migrate`, then run the rest natively:
+Postgres (migrations applied) and etcd — the easiest way is
+`docker compose up -d postgres migrate etcd`, then run the rest natively:
 
 ```bash
-docker compose up -d postgres migrate   # or: your own Postgres + ./scripts/migrate.sh
+docker compose up -d postgres migrate etcd   # or: your own Postgres + etcd + ./scripts/migrate.sh
 
 # ORIONQUEUE_DATABASE_URL defaults to localhost:5432, the standard Postgres
 # port — but this repo's docker-compose.yml maps Postgres to host port 5433
 # instead, because 5432 was already taken by an unrelated Postgres on this
-# project's dev machine (see docker-compose.yml's postgres service). If port
-# 5432 is free on yours, either edit that mapping back to "5432:5432", or
-# override the port here to match whatever docker-compose.yml says:
+# project's dev machine (see docker-compose.yml's postgres service). etcd's
+# default (localhost:2379) matches docker-compose.yml directly. If port 5432
+# is free on yours, either edit that mapping back to "5432:5432", or override
+# the port here to match whatever docker-compose.yml says:
 export ORIONQUEUE_DATABASE_URL="postgres://orionqueue:orionqueue@localhost:5433/orionqueue?sslmode=disable"
 
 ./scripts/dev-api.sh         # http://localhost:7080
 ./scripts/dev-scheduler.sh   # http://localhost:7081
-./scripts/dev-worker.sh      # creates worker/.venv on first run
+./scripts/dev-worker.sh      # creates worker/.venv on first run; registers against ORIONQUEUE_API_GRPC_ADDR (default localhost:9080)
 ./scripts/dev-frontend.sh    # installs node_modules on first run, then Vite dev server
 ```
 
@@ -136,25 +160,28 @@ the Makefile is a thin wrapper.)
 ## Testing
 
 ```bash
-./scripts/fmt.sh             # gofmt, black, prettier — applies formatting
-./scripts/lint.sh            # buf lint, gofmt -l, go vet, golangci-lint (if installed), ruff, black --check, oxlint, prettier --check
-./scripts/test.sh            # go test, pytest, vitest — unit tests only, no Docker required
-./scripts/test-integration.sh # go test ./tests/integration/... — needs Docker (spins up a real Postgres)
-./scripts/build.sh           # go build + frontend production build
-./scripts/migrate.sh up      # apply migrations (also runs automatically inside docker compose up)
-./scripts/proto-gen.sh       # regenerate internal/api/gen/ and docs/api/ from proto/*.proto
+./scripts/fmt.sh              # gofmt, black, prettier — applies formatting
+./scripts/lint.sh             # buf lint, gofmt -l, go vet, golangci-lint (if installed), ruff, black --check, oxlint, prettier --check
+./scripts/test.sh             # go test, pytest, vitest — unit tests only, no Docker required
+./scripts/test-integration.sh # go test ./tests/integration/... — needs Docker (spins up real Postgres/etcd)
+./scripts/build.sh            # go build + frontend production build
+./scripts/migrate.sh up       # apply migrations (also runs automatically inside docker compose up)
+./scripts/proto-gen.sh        # regenerate internal/api/gen/ and docs/api/ from proto/*.proto (Go + OpenAPI)
+./scripts/proto-gen-python.sh # regenerate worker/gen/ from proto/*.proto (Python gRPC client stubs)
 ```
 
 Or `make fmt` / `make lint` / `make test` / `make test-integration` / `make build`
 / `make migrate`. See `PROJECT_STATUS.md` for the latest run's actual test
 counts and coverage. End-to-end and load test suites are added in later
 phases as the functionality they'd exercise (scheduling, checkpointing) gets
-built. What exists today already goes beyond bare unit tests: `internal/api`
-includes real HTTP round-trips through the REST gateway, and
-`tests/integration` runs the full `JobRepository` against a real,
-disposable PostgreSQL container (via testcontainers-go) — including a test
-that opens a second, independent connection to prove a job survives what a
-restart would do.
+built. What exists today already goes beyond bare unit tests:
+`internal/api` includes real HTTP round-trips through the REST gateway, and
+`tests/integration` runs `JobRepository`/`WorkerRepository` against a real,
+disposable PostgreSQL container and `leases.EtcdManager` against a real,
+disposable etcd container (both via testcontainers-go) — including tests
+that open a second, independent connection to prove state survives what a
+restart would do, and one that waits out a real etcd lease TTL to prove
+automatic worker-loss detection against real infrastructure, not a fake.
 
 ## Limitations
 

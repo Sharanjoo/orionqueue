@@ -1,0 +1,228 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "orionqueue/v1/worker_service.proto",
+    "version": "version not set"
+  },
+  "tags": [
+    {
+      "name": "WorkerService",
+      "description": "WorkerService is how worker agents register and heartbeat with the\ncontrol plane (RegisterWorker, WorkerHeartbeat — internal, gRPC-only,\nno REST binding, since only the Python worker agent calls them), and\nhow anyone can list the current worker fleet (ListWorkers — REST too,\nGET /api/v1/workers). GetClusterCapacity is added in Phase 5, once the\nscheduler needs an aggregated view for placement decisions."
+    }
+  ],
+  "consumes": [
+    "application/json"
+  ],
+  "produces": [
+    "application/json"
+  ],
+  "paths": {
+    "/api/v1/workers": {
+      "get": {
+        "operationId": "WorkerService_ListWorkers",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ListWorkersResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "pageSize",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32"
+          },
+          {
+            "name": "pageToken",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "name": "statusFilter",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "enum": [
+              "WORKER_STATUS_UNSPECIFIED",
+              "WORKER_STATUS_ACTIVE",
+              "WORKER_STATUS_LOST"
+            ],
+            "default": "WORKER_STATUS_UNSPECIFIED"
+          }
+        ],
+        "tags": [
+          "WorkerService"
+        ]
+      }
+    }
+  },
+  "definitions": {
+    "protobufAny": {
+      "type": "object",
+      "properties": {
+        "@type": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": {}
+    },
+    "rpcStatus": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "message": {
+          "type": "string"
+        },
+        "details": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/protobufAny"
+          }
+        }
+      }
+    },
+    "v1GPU": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "deviceIndex": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "uuid": {
+          "type": "string"
+        },
+        "totalMemoryBytes": {
+          "type": "string",
+          "format": "int64"
+        },
+        "allocatedMemoryBytes": {
+          "type": "string",
+          "format": "int64"
+        },
+        "utilizationPercent": {
+          "type": "number",
+          "format": "double"
+        },
+        "temperatureCelsius": {
+          "type": "number",
+          "format": "double",
+          "description": "temperature_celsius is unset (not just zero) when unavailable —\nfake-GPU mode never sets it, real NVML mode does from Phase 9."
+        },
+        "migProfile": {
+          "type": "string"
+        },
+        "healthState": {
+          "$ref": "#/definitions/v1GPUHealthState"
+        }
+      },
+      "description": "GPU is one device (real or, in fake-GPU mode, simulated — see\nADR-0003) in a worker's inventory."
+    },
+    "v1GPUHealthState": {
+      "type": "string",
+      "enum": [
+        "GPU_HEALTH_STATE_UNSPECIFIED",
+        "GPU_HEALTH_STATE_HEALTHY",
+        "GPU_HEALTH_STATE_DEGRADED",
+        "GPU_HEALTH_STATE_UNHEALTHY"
+      ],
+      "default": "GPU_HEALTH_STATE_UNSPECIFIED",
+      "description": "GPUHealthState mirrors gpus.HealthState."
+    },
+    "v1ListWorkersResponse": {
+      "type": "object",
+      "properties": {
+        "workers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1Worker"
+          }
+        },
+        "nextPageToken": {
+          "type": "string"
+        }
+      }
+    },
+    "v1Worker": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "hostname": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/v1WorkerStatus"
+        },
+        "cpuCapacity": {
+          "type": "number",
+          "format": "double"
+        },
+        "memoryCapacityBytes": {
+          "type": "string",
+          "format": "int64"
+        },
+        "gpus": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1GPU"
+          }
+        },
+        "softwareVersion": {
+          "type": "string"
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "runningJobIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "registeredAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "lastHeartbeatAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "description": "Worker is OrionQueue's worker record as seen through the API."
+    },
+    "v1WorkerStatus": {
+      "type": "string",
+      "enum": [
+        "WORKER_STATUS_UNSPECIFIED",
+        "WORKER_STATUS_ACTIVE",
+        "WORKER_STATUS_LOST"
+      ],
+      "default": "WORKER_STATUS_UNSPECIFIED",
+      "description": "WorkerStatus mirrors workers.Status in internal/workers/worker.go.\nPhase 4 only ever produces ACTIVE and LOST — see\ndocs/architecture/system-overview.md for why a SUSPECT state is\ndeferred rather than implemented now."
+    }
+  }
+}

@@ -5,6 +5,8 @@ FROM python:3.12-slim AS build
 WORKDIR /src
 COPY worker/pyproject.toml worker/README.md ./
 COPY worker/agent ./agent
+COPY worker/gpu ./gpu
+COPY worker/gen ./gen
 RUN pip install --no-cache-dir --prefix=/install .
 
 FROM python:3.12-slim AS run

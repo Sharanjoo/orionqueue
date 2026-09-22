@@ -34,6 +34,10 @@ type Config struct {
 	// already applied (see scripts/migrate.sh) — nothing in this package
 	// or in internal/persistence runs migrations automatically.
 	DatabaseURL string
+	// EtcdEndpoints is a comma-separated list of etcd endpoints, used for
+	// worker liveness leases (only cmd/api, as of Phase 4 — see
+	// internal/leases and ADR-0001).
+	EtcdEndpoints []string
 	// LogLevel controls the minimum level emitted by the service's
 	// structured logger ("debug", "info", "warn", or "error").
 	LogLevel string
@@ -44,12 +48,26 @@ type Config struct {
 // runnable Config even with no environment variables set.
 func Defaults(serviceName string) Config {
 	return Config{
-		ServiceName: serviceName,
-		Environment: "local",
-		HTTPAddr:    defaultHTTPAddr(serviceName),
-		GRPCAddr:    defaultGRPCAddr(serviceName),
-		DatabaseURL: defaultDatabaseURL(serviceName),
-		LogLevel:    "info",
+		ServiceName:   serviceName,
+		Environment:   "local",
+		HTTPAddr:      defaultHTTPAddr(serviceName),
+		GRPCAddr:      defaultGRPCAddr(serviceName),
+		DatabaseURL:   defaultDatabaseURL(serviceName),
+		EtcdEndpoints: defaultEtcdEndpoints(serviceName),
+		LogLevel:      "info",
+	}
+}
+
+// defaultEtcdEndpoints matches docker-compose.yml's etcd service, so
+// `docker compose up` needs no extra configuration. Empty for services
+// that don't use etcd yet (cmd/scheduler, until Phase 5's leader
+// election).
+func defaultEtcdEndpoints(serviceName string) []string {
+	switch serviceName {
+	case "orionqueue-api":
+		return []string{"localhost:2379"}
+	default:
+		return nil
 	}
 }
 
@@ -117,6 +135,9 @@ func Load(serviceName string) (Config, error) {
 	if v, ok := os.LookupEnv("ORIONQUEUE_DATABASE_URL"); ok && v != "" {
 		cfg.DatabaseURL = v
 	}
+	if v, ok := os.LookupEnv("ORIONQUEUE_ETCD_ENDPOINTS"); ok && v != "" {
+		cfg.EtcdEndpoints = strings.Split(v, ",")
+	}
 	if v, ok := os.LookupEnv("ORIONQUEUE_LOG_LEVEL"); ok && v != "" {
 		cfg.LogLevel = v
 	}
@@ -151,6 +172,14 @@ func (c Config) Validate() error {
 		}
 		if !strings.HasPrefix(c.DatabaseURL, "postgres://") && !strings.HasPrefix(c.DatabaseURL, "postgresql://") {
 			return fmt.Errorf("invalid ORIONQUEUE_DATABASE_URL: must start with postgres:// or postgresql://")
+		}
+		if len(c.EtcdEndpoints) == 0 {
+			return fmt.Errorf("ORIONQUEUE_ETCD_ENDPOINTS must not be empty for orionqueue-api")
+		}
+		for _, ep := range c.EtcdEndpoints {
+			if strings.TrimSpace(ep) == "" {
+				return fmt.Errorf("ORIONQUEUE_ETCD_ENDPOINTS must not contain empty entries")
+			}
 		}
 	}
 	return nil

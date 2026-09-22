@@ -1,4 +1,5 @@
 from google.api import annotations_pb2 as _annotations_pb2
+from orionqueue.v1 import job_pb2 as _job_pb2
 from orionqueue.v1 import worker_pb2 as _worker_pb2
 from google.protobuf.internal import containers as _containers
 from google.protobuf import descriptor as _descriptor
@@ -50,10 +51,12 @@ class WorkerHeartbeatRequest(_message.Message):
     def __init__(self, worker_id: _Optional[str] = ..., gpus: _Optional[_Iterable[_Union[_worker_pb2.GPU, _Mapping]]] = ..., running_job_ids: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class WorkerHeartbeatResponse(_message.Message):
-    __slots__ = ("worker",)
+    __slots__ = ("worker", "assigned_jobs")
     WORKER_FIELD_NUMBER: _ClassVar[int]
+    ASSIGNED_JOBS_FIELD_NUMBER: _ClassVar[int]
     worker: _worker_pb2.Worker
-    def __init__(self, worker: _Optional[_Union[_worker_pb2.Worker, _Mapping]] = ...) -> None: ...
+    assigned_jobs: _containers.RepeatedCompositeFieldContainer[_job_pb2.Job]
+    def __init__(self, worker: _Optional[_Union[_worker_pb2.Worker, _Mapping]] = ..., assigned_jobs: _Optional[_Iterable[_Union[_job_pb2.Job, _Mapping]]] = ...) -> None: ...
 
 class ListWorkersRequest(_message.Message):
     __slots__ = ("page_size", "page_token", "status_filter")

@@ -107,6 +107,39 @@ func (s *JobServer) RetryJob(ctx context.Context, req *pb.RetryJobRequest) (*pb.
 	return &pb.RetryJobResponse{Job: jobToProto(job)}, nil
 }
 
+func (s *JobServer) ReportJobStarted(ctx context.Context, req *pb.ReportJobStartedRequest) (*pb.ReportJobStartedResponse, error) {
+	if req.GetJobId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "job_id must not be empty")
+	}
+	job, err := s.svc.Start(ctx, req.GetJobId())
+	if err != nil {
+		return nil, s.toStatus(err)
+	}
+	return &pb.ReportJobStartedResponse{Job: jobToProto(job)}, nil
+}
+
+func (s *JobServer) ReportJobCompleted(ctx context.Context, req *pb.ReportJobCompletedRequest) (*pb.ReportJobCompletedResponse, error) {
+	if req.GetJobId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "job_id must not be empty")
+	}
+	job, err := s.svc.Complete(ctx, req.GetJobId())
+	if err != nil {
+		return nil, s.toStatus(err)
+	}
+	return &pb.ReportJobCompletedResponse{Job: jobToProto(job)}, nil
+}
+
+func (s *JobServer) ReportJobFailed(ctx context.Context, req *pb.ReportJobFailedRequest) (*pb.ReportJobFailedResponse, error) {
+	if req.GetJobId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "job_id must not be empty")
+	}
+	job, err := s.svc.Fail(ctx, req.GetJobId(), req.GetFailureReason())
+	if err != nil {
+		return nil, s.toStatus(err)
+	}
+	return &pb.ReportJobFailedResponse{Job: jobToProto(job)}, nil
+}
+
 // toStatus maps a jobs-package domain error to the gRPC status it should
 // surface as. grpc-gateway maps these codes to HTTP statuses automatically
 // (InvalidArgument->400, NotFound->404, FailedPrecondition->409,

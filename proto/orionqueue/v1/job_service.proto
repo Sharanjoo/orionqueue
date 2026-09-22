@@ -68,10 +68,47 @@ message RetryJobResponse {
   Job job = 1;
 }
 
+// ReportJobStarted/Completed/Failed are called only by the worker agent
+// executing a job — internal, gRPC-only, no REST binding, the same
+// access pattern as WorkerService's RegisterWorker/WorkerHeartbeat.
+// ReportJobProgress and ReportCheckpoint (from the project brief's full
+// API contract list) are added in Phase 10 and Phase 8 respectively, once
+// there's a metrics pipeline and a checkpoint store for them to report
+// into.
+message ReportJobStartedRequest {
+  string job_id = 1;
+  string worker_id = 2;
+}
+
+message ReportJobStartedResponse {
+  Job job = 1;
+}
+
+message ReportJobCompletedRequest {
+  string job_id = 1;
+  string worker_id = 2;
+  int32 exit_code = 3;
+}
+
+message ReportJobCompletedResponse {
+  Job job = 1;
+}
+
+message ReportJobFailedRequest {
+  string job_id = 1;
+  string worker_id = 2;
+  string failure_reason = 3;
+}
+
+message ReportJobFailedResponse {
+  Job job = 1;
+}
+
 // JobService is OrionQueue's job submission and management API. Phase 2
-// scope: SubmitJob, GetJob, ListJobs, CancelJob, RetryJob. WatchJob
-// (streaming job events) is added in Phase 3, once job_events history
-// exists in PostgreSQL for it to stream from.
+// scope: SubmitJob, GetJob, ListJobs, CancelJob, RetryJob. Phase 6 adds
+// ReportJobStarted/Completed/Failed. WatchJob (streaming job events) is
+// added once job_events history is exposed through the API — the table
+// itself has existed since Phase 3.
 service JobService {
   rpc SubmitJob(SubmitJobRequest) returns (SubmitJobResponse) {
     option (google.api.http) = {
@@ -105,4 +142,10 @@ service JobService {
       body: "*"
     };
   }
+
+  rpc ReportJobStarted(ReportJobStartedRequest) returns (ReportJobStartedResponse);
+
+  rpc ReportJobCompleted(ReportJobCompletedRequest) returns (ReportJobCompletedResponse);
+
+  rpc ReportJobFailed(ReportJobFailedRequest) returns (ReportJobFailedResponse);
 }

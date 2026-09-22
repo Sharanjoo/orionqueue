@@ -30,7 +30,7 @@ func newTestGatewayServer(t *testing.T) (*httptest.Server, *workers.Service) {
 	workerSvc := workers.NewService(workers.NewMemoryRepository(), leases.NewFakeManager())
 	logger := slog.New(slog.NewJSONHandler(discardWriter{}, nil))
 	jobServer := NewJobServer(jobSvc, logger)
-	workerServer := NewWorkerServer(workerSvc, logger)
+	workerServer := NewWorkerServer(workerSvc, jobSvc, logger)
 
 	mux, err := NewGatewayMux(context.Background(), jobServer, workerServer)
 	if err != nil {

@@ -1,20 +1,35 @@
 """Entry point for the OrionQueue worker agent.
 
-Phase 4 scope: discover (simulated, see gpu/fake.py) GPU inventory,
-register with the control plane's WorkerService, then heartbeat on the
-interval the server told it to (RegisterWorkerResponse.heartbeat_interval_seconds)
-until interrupted. Registration retries with backoff if the control plane
-is briefly unreachable at startup; a heartbeat failure is logged and
-retried on the next normal interval rather than treated as fatal, since
-the server-side lease TTL is already sized to tolerate a few missed
-heartbeats (see internal/workers.Service and ADR-0001). Job execution is
-added in Phase 6.
+Discovers (simulated, see gpu/fake.py) GPU inventory, registers with the
+control plane's WorkerService, then heartbeats on the interval the server
+told it to (RegisterWorkerResponse.heartbeat_interval_seconds) until
+interrupted. Registration retries with backoff if the control plane is
+briefly unreachable at startup; a heartbeat failure is logged and retried
+on the next normal interval rather than treated as fatal, since the
+server-side lease TTL is already sized to tolerate a few missed
+heartbeats (see internal/workers.Service and ADR-0001).
+
+Phase 6 scope: each heartbeat response may carry newly assigned jobs
+(WorkerHeartbeatResponse.assigned_jobs — see ADR-0004-ish note in
+grpc_client.py's docstring). Each assigned job is executed in its own
+daemon thread via executors.fake.run(), reporting Started/Completed/Failed
+to the control plane around it, so a long-running (simulated) job never
+blocks the heartbeat loop — a missed heartbeat during a slow job would
+otherwise risk the worker being declared LOST (Phase 4) while it's still
+healthy and simply busy. Real GPU execution replacing executors.fake is
+Phase 9; graceful cancellation/draining of in-flight jobs on shutdown is
+Phase 7 — until then, a SIGTERM/SIGINT during job execution abandons any
+still-running job threads (they're daemon threads and die with the
+process) and relies on the existing lease-expiry + LoseWorker recovery
+path (Phase 4/6) to requeue or fail them, exactly as if the worker had
+crashed outright.
 """
 
 from __future__ import annotations
 
 import signal
 import sys
+import threading
 import time
 from types import FrameType
 
@@ -22,9 +37,10 @@ import grpc
 
 from agent import __version__
 from agent.config import Config, load
-from agent.grpc_client import WorkerClient
+from agent.grpc_client import AssignedJob, WorkerClient
 from agent.logging_setup import configure
-from gpu import fake
+from executors import fake as executor_fake
+from gpu import fake as gpu_fake
 
 _SLEEP_CHUNK_SECONDS = 0.2
 _REGISTER_INITIAL_BACKOFF_SECONDS = 1.0
@@ -51,7 +67,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if cfg.fake_gpu:
-        gpus = fake.discover(cfg.worker_id, cfg.fake_gpu_count, cfg.fake_gpu_memory_bytes)
+        gpus = gpu_fake.discover(cfg.worker_id, cfg.fake_gpu_count, cfg.fake_gpu_memory_bytes)
         logger.info(
             "discovered simulated GPU inventory",
             extra={"fields": {"gpu_count": len(gpus), "simulated": True}},
@@ -67,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
         client.close()
 
 
-def run(cfg: Config, logger, client: WorkerClient, gpus: list[fake.GPU]) -> int:
+def run(cfg: Config, logger, client: WorkerClient, gpus: list[gpu_fake.GPU]) -> int:
     shutdown_requested = _install_signal_handlers(logger)
 
     worker_id, heartbeat_interval = _register_with_retry(
@@ -87,28 +103,120 @@ def run(cfg: Config, logger, client: WorkerClient, gpus: list[fake.GPU]) -> int:
         },
     )
 
+    running_jobs: dict[str, threading.Thread] = {}
+    running_jobs_lock = threading.Lock()
+
     while not shutdown_requested["value"]:
         _sleep_in_chunks(heartbeat_interval, shutdown_requested)
         if shutdown_requested["value"]:
             break
         try:
-            client.heartbeat(worker_id, gpus, running_job_ids=[])
-            logger.info("heartbeat sent", extra={"fields": {"worker_id": worker_id}})
+            with running_jobs_lock:
+                running_job_ids = list(running_jobs.keys())
+            result = client.heartbeat(worker_id, gpus, running_job_ids=running_job_ids)
+            logger.info(
+                "heartbeat sent",
+                extra={
+                    "fields": {
+                        "worker_id": worker_id,
+                        "running_jobs": len(running_job_ids),
+                        "newly_assigned": len(result.assigned_jobs),
+                    }
+                },
+            )
         except grpc.RpcError as exc:
             logger.error(
                 "heartbeat failed, will retry on the next interval",
                 extra={"fields": {"worker_id": worker_id, "error": str(exc)}},
             )
+            continue
+
+        for job in result.assigned_jobs:
+            with running_jobs_lock:
+                if job.job_id in running_jobs:
+                    continue
+            _start_job(logger, client, worker_id, job, running_jobs, running_jobs_lock)
 
     logger.info("stopped")
     return 0
+
+
+def _start_job(
+    logger,
+    client: WorkerClient,
+    worker_id: str,
+    job: AssignedJob,
+    running_jobs: dict[str, threading.Thread],
+    running_jobs_lock: threading.Lock,
+) -> None:
+    """Starts one assigned job in its own daemon thread, so job execution
+    (which, even in fake-GPU mode, is deliberately modeled as taking real
+    wall-clock time — see executors/fake.py) never blocks the heartbeat
+    loop above. The thread reports Started before executing and
+    Completed/Failed after, then removes itself from running_jobs so the
+    next heartbeat's running_job_ids reflects reality and the job isn't
+    started a second time.
+    """
+
+    def _execute() -> None:
+        job_id = job.job_id
+        try:
+            client.report_started(job_id, worker_id)
+            logger.info("job started", extra={"fields": {"job_id": job_id, "worker_id": worker_id}})
+        except grpc.RpcError as exc:
+            # The control plane already believes this job is SCHEDULED to
+            # us (that's why it appeared in assigned_jobs); a failure to
+            # ack "started" is logged but doesn't stop execution — the
+            # subsequent Completed/Failed report is what actually matters
+            # for the job's terminal state.
+            logger.error(
+                "failed to report job started, executing anyway",
+                extra={"fields": {"job_id": job_id, "error": str(exc)}},
+            )
+
+        outcome = executor_fake.run(job.command, timeout_seconds=job.timeout_seconds)
+
+        try:
+            if outcome.success:
+                client.report_completed(job_id, worker_id, exit_code=0)
+                logger.info(
+                    "job completed",
+                    extra={
+                        "fields": {"job_id": job_id, "steps_completed": outcome.steps_completed}
+                    },
+                )
+            else:
+                client.report_failed(job_id, worker_id, outcome.failure_reason)
+                logger.warning(
+                    "job failed",
+                    extra={
+                        "fields": {
+                            "job_id": job_id,
+                            "reason": outcome.failure_reason,
+                            "steps_completed": outcome.steps_completed,
+                        }
+                    },
+                )
+        except grpc.RpcError as exc:
+            logger.error(
+                "failed to report job outcome to control plane",
+                extra={"fields": {"job_id": job_id, "error": str(exc)}},
+            )
+        finally:
+            with running_jobs_lock:
+                running_jobs.pop(job_id, None)
+
+    thread = threading.Thread(target=_execute, name=f"orionqueue-job-{job.job_id}", daemon=True)
+    with running_jobs_lock:
+        running_jobs[job.job_id] = thread
+    thread.start()
 
 
 def _register_with_retry(
     cfg: Config,
     logger,
     client: WorkerClient,
-    gpus: list[fake.GPU],
+    gpus: list[gpu_fake.GPU],
     shutdown_requested: dict,
 ):
     delay = _REGISTER_INITIAL_BACKOFF_SECONDS

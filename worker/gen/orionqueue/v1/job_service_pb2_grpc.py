@@ -27,9 +27,10 @@ if _version_not_supported:
 
 class JobServiceStub:
     """JobService is OrionQueue's job submission and management API. Phase 2
-    scope: SubmitJob, GetJob, ListJobs, CancelJob, RetryJob. WatchJob
-    (streaming job events) is added in Phase 3, once job_events history
-    exists in PostgreSQL for it to stream from.
+    scope: SubmitJob, GetJob, ListJobs, CancelJob, RetryJob. Phase 6 adds
+    ReportJobStarted/Completed/Failed. WatchJob (streaming job events) is
+    added once job_events history is exposed through the API — the table
+    itself has existed since Phase 3.
     """
 
     def __init__(self, channel):
@@ -63,13 +64,29 @@ class JobServiceStub:
                 request_serializer=orionqueue_dot_v1_dot_job__service__pb2.RetryJobRequest.SerializeToString,
                 response_deserializer=orionqueue_dot_v1_dot_job__service__pb2.RetryJobResponse.FromString,
                 _registered_method=True)
+        self.ReportJobStarted = channel.unary_unary(
+                '/orionqueue.v1.JobService/ReportJobStarted',
+                request_serializer=orionqueue_dot_v1_dot_job__service__pb2.ReportJobStartedRequest.SerializeToString,
+                response_deserializer=orionqueue_dot_v1_dot_job__service__pb2.ReportJobStartedResponse.FromString,
+                _registered_method=True)
+        self.ReportJobCompleted = channel.unary_unary(
+                '/orionqueue.v1.JobService/ReportJobCompleted',
+                request_serializer=orionqueue_dot_v1_dot_job__service__pb2.ReportJobCompletedRequest.SerializeToString,
+                response_deserializer=orionqueue_dot_v1_dot_job__service__pb2.ReportJobCompletedResponse.FromString,
+                _registered_method=True)
+        self.ReportJobFailed = channel.unary_unary(
+                '/orionqueue.v1.JobService/ReportJobFailed',
+                request_serializer=orionqueue_dot_v1_dot_job__service__pb2.ReportJobFailedRequest.SerializeToString,
+                response_deserializer=orionqueue_dot_v1_dot_job__service__pb2.ReportJobFailedResponse.FromString,
+                _registered_method=True)
 
 
 class JobServiceServicer:
     """JobService is OrionQueue's job submission and management API. Phase 2
-    scope: SubmitJob, GetJob, ListJobs, CancelJob, RetryJob. WatchJob
-    (streaming job events) is added in Phase 3, once job_events history
-    exists in PostgreSQL for it to stream from.
+    scope: SubmitJob, GetJob, ListJobs, CancelJob, RetryJob. Phase 6 adds
+    ReportJobStarted/Completed/Failed. WatchJob (streaming job events) is
+    added once job_events history is exposed through the API — the table
+    itself has existed since Phase 3.
     """
 
     def SubmitJob(self, request, context):
@@ -97,6 +114,24 @@ class JobServiceServicer:
         raise NotImplementedError('Method not implemented!')
 
     def RetryJob(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ReportJobStarted(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ReportJobCompleted(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ReportJobFailed(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -130,6 +165,21 @@ def add_JobServiceServicer_to_server(servicer, server):
                     request_deserializer=orionqueue_dot_v1_dot_job__service__pb2.RetryJobRequest.FromString,
                     response_serializer=orionqueue_dot_v1_dot_job__service__pb2.RetryJobResponse.SerializeToString,
             ),
+            'ReportJobStarted': grpc.unary_unary_rpc_method_handler(
+                    servicer.ReportJobStarted,
+                    request_deserializer=orionqueue_dot_v1_dot_job__service__pb2.ReportJobStartedRequest.FromString,
+                    response_serializer=orionqueue_dot_v1_dot_job__service__pb2.ReportJobStartedResponse.SerializeToString,
+            ),
+            'ReportJobCompleted': grpc.unary_unary_rpc_method_handler(
+                    servicer.ReportJobCompleted,
+                    request_deserializer=orionqueue_dot_v1_dot_job__service__pb2.ReportJobCompletedRequest.FromString,
+                    response_serializer=orionqueue_dot_v1_dot_job__service__pb2.ReportJobCompletedResponse.SerializeToString,
+            ),
+            'ReportJobFailed': grpc.unary_unary_rpc_method_handler(
+                    servicer.ReportJobFailed,
+                    request_deserializer=orionqueue_dot_v1_dot_job__service__pb2.ReportJobFailedRequest.FromString,
+                    response_serializer=orionqueue_dot_v1_dot_job__service__pb2.ReportJobFailedResponse.SerializeToString,
+            ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
             'orionqueue.v1.JobService', rpc_method_handlers)
@@ -140,9 +190,10 @@ def add_JobServiceServicer_to_server(servicer, server):
  # This class is part of an EXPERIMENTAL API.
 class JobService:
     """JobService is OrionQueue's job submission and management API. Phase 2
-    scope: SubmitJob, GetJob, ListJobs, CancelJob, RetryJob. WatchJob
-    (streaming job events) is added in Phase 3, once job_events history
-    exists in PostgreSQL for it to stream from.
+    scope: SubmitJob, GetJob, ListJobs, CancelJob, RetryJob. Phase 6 adds
+    ReportJobStarted/Completed/Failed. WatchJob (streaming job events) is
+    added once job_events history is exposed through the API — the table
+    itself has existed since Phase 3.
     """
 
     @staticmethod
@@ -270,6 +321,87 @@ class JobService:
             '/orionqueue.v1.JobService/RetryJob',
             orionqueue_dot_v1_dot_job__service__pb2.RetryJobRequest.SerializeToString,
             orionqueue_dot_v1_dot_job__service__pb2.RetryJobResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ReportJobStarted(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/orionqueue.v1.JobService/ReportJobStarted',
+            orionqueue_dot_v1_dot_job__service__pb2.ReportJobStartedRequest.SerializeToString,
+            orionqueue_dot_v1_dot_job__service__pb2.ReportJobStartedResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ReportJobCompleted(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/orionqueue.v1.JobService/ReportJobCompleted',
+            orionqueue_dot_v1_dot_job__service__pb2.ReportJobCompletedRequest.SerializeToString,
+            orionqueue_dot_v1_dot_job__service__pb2.ReportJobCompletedResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ReportJobFailed(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/orionqueue.v1.JobService/ReportJobFailed',
+            orionqueue_dot_v1_dot_job__service__pb2.ReportJobFailedRequest.SerializeToString,
+            orionqueue_dot_v1_dot_job__service__pb2.ReportJobFailedResponse.FromString,
             options,
             channel_credentials,
             insecure,

@@ -1,15 +1,17 @@
 # OrionQueue — Distributed GPU Workload Orchestrator
 
-> **Status: Phase 5 (scheduler) complete.** Submitted jobs are now actually
-> scheduled: a real scheduling loop picks up QUEUED jobs, checks GPU/CPU/memory
-> eligibility against real worker capacity, and assigns them — verified live,
-> a submitted job went from QUEUED to SCHEDULED with the correct worker ID in
-> under 5 seconds, with a matching row in `scheduling_decisions`. Leader
-> election over etcd means only one scheduler replica is ever active, proven
-> against real etcd (mutual exclusion and automatic failover). There is no
-> job *execution* wired in yet — a SCHEDULED job doesn't yet run anywhere;
-> that's Phase 6. See [PROJECT_STATUS.md](PROJECT_STATUS.md) for the live
-> phase tracker and
+> **Status: Phase 6 (job execution) complete.** A SCHEDULED job now actually
+> runs: the control plane delivers job assignments to workers on the existing
+> heartbeat cycle, each worker executes it with a deterministic fake-GPU
+> executor on its own thread (so heartbeats never stall behind a long job),
+> and reports Started/Completed/Failed back — verified live end to end for
+> all three lifecycle paths: a normal job reaching `SUCCEEDED`, a failing job
+> retrying then reaching terminal `FAILED` once `retry_limit` is exhausted,
+> and a job surviving a real `docker kill` of its worker mid-execution via
+> the existing lease-expiry detection, then completing after the worker
+> restarted. Cancellation and preemption of a RUNNING job are not wired in
+> yet — that's Phase 7. See [PROJECT_STATUS.md](PROJECT_STATUS.md) for the
+> live phase tracker and
 > [docs/architecture/system-overview.md](docs/architecture/system-overview.md)
 > for the full design.
 
@@ -95,12 +97,36 @@ curl -X POST http://localhost:7080/api/v1/jobs -d '{
 
 curl http://localhost:7080/api/v1/jobs                     # list
 curl http://localhost:7080/api/v1/jobs/<id>                # get
-curl -X POST http://localhost:7080/api/v1/jobs/<id>/cancel -d '{}'
-curl -X POST http://localhost:7080/api/v1/jobs/<id>/retry -d '{}'   # only valid once a job has FAILED (Phase 6+)
+curl -X POST http://localhost:7080/api/v1/jobs/<id>/cancel -d '{}'  # rejected while RUNNING until Phase 7
+curl -X POST http://localhost:7080/api/v1/jobs/<id>/retry -d '{}'   # only valid once a job has reached terminal FAILED
 ```
 
 Submitting twice with the same `submission_id` field returns the original
 job instead of creating a duplicate (idempotent submission).
+
+**Watch a job actually run (Phase 6, fake-GPU executor):** in fake-GPU
+mode a job's `command` doubles as the simulated executor's configuration
+(there's no real image/command to run yet) — `--steps=N` (default 5),
+`--step-seconds=X` (default 1.0), and `--fail-at-step=N` (default: never
+fail) for reproducible failure-injection demos. See
+[ADR-0003](docs/adr/0003-fake-vs-real-gpu.md).
+
+```bash
+curl -X POST http://localhost:7080/api/v1/jobs -d '{
+  "name": "fake-job", "owner": "you", "image": "fake-gpu-executor",
+  "command": ["--steps=3", "--step-seconds=1"],
+  "resources": {"gpu_count": 1, "cpu_cores": 1}, "priority": 50, "retry_limit": 1
+}'
+sleep 5
+curl http://localhost:7080/api/v1/jobs/<id>
+# state moves JOB_STATE_QUEUED -> SCHEDULED -> RUNNING -> SUCCEEDED as the
+# assigned worker's heartbeat picks it up, executes it, and reports back
+
+# Add "--fail-at-step=2" and retry_limit>1 to see it requeue
+# (current_attempt increments, failure_reason is preserved) and retry
+# before eventually reaching terminal JOB_STATE_FAILED once retries are
+# exhausted.
+```
 
 **View the worker fleet and its GPU inventory (REST):**
 
@@ -115,12 +141,23 @@ worker agent calls them); `ListWorkers` is REST-exposed. Every GPU value
 comes from the deterministic fake-GPU simulator (see
 [ADR-0003](docs/adr/0003-fake-vs-real-gpu.md)) unless run on real hardware.
 
-**See automatic worker-loss detection:** stop the worker (`docker compose
-stop worker`) and poll `GET /api/v1/workers` — its `status` flips from
+**See automatic worker-loss detection and job recovery:** submit a
+longer-running job (e.g. `--steps=30 --step-seconds=1`), let it reach
+`JOB_STATE_RUNNING`, then kill its worker (`docker kill
+orionqueue-worker-1`, or `docker compose stop worker` for a graceful
+stop). Poll `GET /api/v1/workers` — its `status` flips from
 `WORKER_STATUS_ACTIVE` to `WORKER_STATUS_LOST` on its own, once its etcd
 lease expires without a renewing heartbeat (default: ~20s after the last
-heartbeat, no polling or external script required). Restart it with
-`docker compose start worker` to see it register again as a new worker.
+heartbeat, no polling or external script required). The same lease
+expiry also recovers the job: poll `GET /api/v1/jobs/<id>` and watch it
+flip from `JOB_STATE_RUNNING` to `JOB_STATE_QUEUED` with
+`current_attempt` incremented (or straight to terminal `JOB_STATE_FAILED`
+if retries were already exhausted) — the api log records
+`"worker marked LOST"` immediately followed by
+`"recovered jobs from lost worker"`. Restart the worker
+(`docker compose up -d worker` / `docker compose start worker`) to see it
+register again and the requeued job get picked back up and run to
+completion.
 
 **Watch a job actually get scheduled:** with a worker registered, submit a
 job that fits its capacity and poll it — within one scheduling pass (default
@@ -140,9 +177,10 @@ A job requesting more GPUs than any current worker has stays
 `JOB_STATE_QUEUED` indefinitely rather than being force-failed — a
 larger worker could register later and make it schedulable (see
 [ADR-0002](docs/adr/0002-scheduler-design.md)). Every successful
-assignment is also recorded in the `scheduling_decisions` table.
-`assigned_worker_ids` being set doesn't mean the job is *running* yet —
-nothing executes it until Phase 6.
+assignment is also recorded in the `scheduling_decisions` table. As of
+Phase 6, `assigned_worker_ids` being set means the job is picked up and
+actually executed on the worker's next heartbeat — see "Watch a job
+actually run" above.
 
 **Or call the real gRPC service directly**, e.g. with
 [grpcurl](https://github.com/fullstorydev/grpcurl) (server reflection is on,

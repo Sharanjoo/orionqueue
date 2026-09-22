@@ -224,8 +224,15 @@ func (x *WorkerHeartbeatRequest) GetRunningJobIds() []string {
 }
 
 type WorkerHeartbeatResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Worker        *Worker                `protobuf:"bytes,1,opt,name=worker,proto3" json:"worker,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Worker *Worker                `protobuf:"bytes,1,opt,name=worker,proto3" json:"worker,omitempty"`
+	// assigned_jobs lists jobs currently SCHEDULED to this worker that it
+	// hasn't yet reported starting (via JobService.ReportJobStarted) — the
+	// worker agent picks these up and begins executing them. Piggybacking
+	// this on the heartbeat response (rather than a separate poll/push
+	// mechanism) reuses a channel the worker is already calling on a
+	// steady interval — see docs/architecture/system-overview.md.
+	AssignedJobs  []*Job `protobuf:"bytes,2,rep,name=assigned_jobs,json=assignedJobs,proto3" json:"assigned_jobs,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -263,6 +270,13 @@ func (*WorkerHeartbeatResponse) Descriptor() ([]byte, []int) {
 func (x *WorkerHeartbeatResponse) GetWorker() *Worker {
 	if x != nil {
 		return x.Worker
+	}
+	return nil
+}
+
+func (x *WorkerHeartbeatResponse) GetAssignedJobs() []*Job {
+	if x != nil {
+		return x.AssignedJobs
 	}
 	return nil
 }
@@ -383,7 +397,7 @@ var File_orionqueue_v1_worker_service_proto protoreflect.FileDescriptor
 
 const file_orionqueue_v1_worker_service_proto_rawDesc = "" +
 	"\n" +
-	"\"orionqueue/v1/worker_service.proto\x12\rorionqueue.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1aorionqueue/v1/worker.proto\"\xe2\x02\n" +
+	"\"orionqueue/v1/worker_service.proto\x12\rorionqueue.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x17orionqueue/v1/job.proto\x1a\x1aorionqueue/v1/worker.proto\"\xe2\x02\n" +
 	"\x15RegisterWorkerRequest\x12\x1a\n" +
 	"\bhostname\x18\x01 \x01(\tR\bhostname\x12!\n" +
 	"\fcpu_capacity\x18\x02 \x01(\x01R\vcpuCapacity\x122\n" +
@@ -400,9 +414,10 @@ const file_orionqueue_v1_worker_service_proto_rawDesc = "" +
 	"\x16WorkerHeartbeatRequest\x12\x1b\n" +
 	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12&\n" +
 	"\x04gpus\x18\x02 \x03(\v2\x12.orionqueue.v1.GPUR\x04gpus\x12&\n" +
-	"\x0frunning_job_ids\x18\x03 \x03(\tR\rrunningJobIds\"H\n" +
+	"\x0frunning_job_ids\x18\x03 \x03(\tR\rrunningJobIds\"\x81\x01\n" +
 	"\x17WorkerHeartbeatResponse\x12-\n" +
-	"\x06worker\x18\x01 \x01(\v2\x15.orionqueue.v1.WorkerR\x06worker\"\x92\x01\n" +
+	"\x06worker\x18\x01 \x01(\v2\x15.orionqueue.v1.WorkerR\x06worker\x127\n" +
+	"\rassigned_jobs\x18\x02 \x03(\v2\x12.orionqueue.v1.JobR\fassignedJobs\"\x92\x01\n" +
 	"\x12ListWorkersRequest\x12\x1b\n" +
 	"\tpage_size\x18\x01 \x01(\x05R\bpageSize\x12\x1d\n" +
 	"\n" +
@@ -439,7 +454,8 @@ var file_orionqueue_v1_worker_service_proto_goTypes = []any{
 	nil,                             // 6: orionqueue.v1.RegisterWorkerRequest.LabelsEntry
 	(*GPU)(nil),                     // 7: orionqueue.v1.GPU
 	(*Worker)(nil),                  // 8: orionqueue.v1.Worker
-	(WorkerStatus)(0),               // 9: orionqueue.v1.WorkerStatus
+	(*Job)(nil),                     // 9: orionqueue.v1.Job
+	(WorkerStatus)(0),               // 10: orionqueue.v1.WorkerStatus
 }
 var file_orionqueue_v1_worker_service_proto_depIdxs = []int32{
 	7,  // 0: orionqueue.v1.RegisterWorkerRequest.gpus:type_name -> orionqueue.v1.GPU
@@ -447,19 +463,20 @@ var file_orionqueue_v1_worker_service_proto_depIdxs = []int32{
 	8,  // 2: orionqueue.v1.RegisterWorkerResponse.worker:type_name -> orionqueue.v1.Worker
 	7,  // 3: orionqueue.v1.WorkerHeartbeatRequest.gpus:type_name -> orionqueue.v1.GPU
 	8,  // 4: orionqueue.v1.WorkerHeartbeatResponse.worker:type_name -> orionqueue.v1.Worker
-	9,  // 5: orionqueue.v1.ListWorkersRequest.status_filter:type_name -> orionqueue.v1.WorkerStatus
-	8,  // 6: orionqueue.v1.ListWorkersResponse.workers:type_name -> orionqueue.v1.Worker
-	0,  // 7: orionqueue.v1.WorkerService.RegisterWorker:input_type -> orionqueue.v1.RegisterWorkerRequest
-	2,  // 8: orionqueue.v1.WorkerService.WorkerHeartbeat:input_type -> orionqueue.v1.WorkerHeartbeatRequest
-	4,  // 9: orionqueue.v1.WorkerService.ListWorkers:input_type -> orionqueue.v1.ListWorkersRequest
-	1,  // 10: orionqueue.v1.WorkerService.RegisterWorker:output_type -> orionqueue.v1.RegisterWorkerResponse
-	3,  // 11: orionqueue.v1.WorkerService.WorkerHeartbeat:output_type -> orionqueue.v1.WorkerHeartbeatResponse
-	5,  // 12: orionqueue.v1.WorkerService.ListWorkers:output_type -> orionqueue.v1.ListWorkersResponse
-	10, // [10:13] is the sub-list for method output_type
-	7,  // [7:10] is the sub-list for method input_type
-	7,  // [7:7] is the sub-list for extension type_name
-	7,  // [7:7] is the sub-list for extension extendee
-	0,  // [0:7] is the sub-list for field type_name
+	9,  // 5: orionqueue.v1.WorkerHeartbeatResponse.assigned_jobs:type_name -> orionqueue.v1.Job
+	10, // 6: orionqueue.v1.ListWorkersRequest.status_filter:type_name -> orionqueue.v1.WorkerStatus
+	8,  // 7: orionqueue.v1.ListWorkersResponse.workers:type_name -> orionqueue.v1.Worker
+	0,  // 8: orionqueue.v1.WorkerService.RegisterWorker:input_type -> orionqueue.v1.RegisterWorkerRequest
+	2,  // 9: orionqueue.v1.WorkerService.WorkerHeartbeat:input_type -> orionqueue.v1.WorkerHeartbeatRequest
+	4,  // 10: orionqueue.v1.WorkerService.ListWorkers:input_type -> orionqueue.v1.ListWorkersRequest
+	1,  // 11: orionqueue.v1.WorkerService.RegisterWorker:output_type -> orionqueue.v1.RegisterWorkerResponse
+	3,  // 12: orionqueue.v1.WorkerService.WorkerHeartbeat:output_type -> orionqueue.v1.WorkerHeartbeatResponse
+	5,  // 13: orionqueue.v1.WorkerService.ListWorkers:output_type -> orionqueue.v1.ListWorkersResponse
+	11, // [11:14] is the sub-list for method output_type
+	8,  // [8:11] is the sub-list for method input_type
+	8,  // [8:8] is the sub-list for extension type_name
+	8,  // [8:8] is the sub-list for extension extendee
+	0,  // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_orionqueue_v1_worker_service_proto_init() }
@@ -467,6 +484,7 @@ func file_orionqueue_v1_worker_service_proto_init() {
 	if File_orionqueue_v1_worker_service_proto != nil {
 		return
 	}
+	file_orionqueue_v1_job_proto_init()
 	file_orionqueue_v1_worker_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{

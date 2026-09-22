@@ -571,6 +571,317 @@ func (x *RetryJobResponse) GetJob() *Job {
 	return nil
 }
 
+// ReportJobStarted/Completed/Failed are called only by the worker agent
+// executing a job — internal, gRPC-only, no REST binding, the same
+// access pattern as WorkerService's RegisterWorker/WorkerHeartbeat.
+// ReportJobProgress and ReportCheckpoint (from the project brief's full
+// API contract list) are added in Phase 10 and Phase 8 respectively, once
+// there's a metrics pipeline and a checkpoint store for them to report
+// into.
+type ReportJobStartedRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	WorkerId      string                 `protobuf:"bytes,2,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReportJobStartedRequest) Reset() {
+	*x = ReportJobStartedRequest{}
+	mi := &file_orionqueue_v1_job_service_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReportJobStartedRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReportJobStartedRequest) ProtoMessage() {}
+
+func (x *ReportJobStartedRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_orionqueue_v1_job_service_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReportJobStartedRequest.ProtoReflect.Descriptor instead.
+func (*ReportJobStartedRequest) Descriptor() ([]byte, []int) {
+	return file_orionqueue_v1_job_service_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *ReportJobStartedRequest) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+func (x *ReportJobStartedRequest) GetWorkerId() string {
+	if x != nil {
+		return x.WorkerId
+	}
+	return ""
+}
+
+type ReportJobStartedResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Job           *Job                   `protobuf:"bytes,1,opt,name=job,proto3" json:"job,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReportJobStartedResponse) Reset() {
+	*x = ReportJobStartedResponse{}
+	mi := &file_orionqueue_v1_job_service_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReportJobStartedResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReportJobStartedResponse) ProtoMessage() {}
+
+func (x *ReportJobStartedResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_orionqueue_v1_job_service_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReportJobStartedResponse.ProtoReflect.Descriptor instead.
+func (*ReportJobStartedResponse) Descriptor() ([]byte, []int) {
+	return file_orionqueue_v1_job_service_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *ReportJobStartedResponse) GetJob() *Job {
+	if x != nil {
+		return x.Job
+	}
+	return nil
+}
+
+type ReportJobCompletedRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	WorkerId      string                 `protobuf:"bytes,2,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	ExitCode      int32                  `protobuf:"varint,3,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReportJobCompletedRequest) Reset() {
+	*x = ReportJobCompletedRequest{}
+	mi := &file_orionqueue_v1_job_service_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReportJobCompletedRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReportJobCompletedRequest) ProtoMessage() {}
+
+func (x *ReportJobCompletedRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_orionqueue_v1_job_service_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReportJobCompletedRequest.ProtoReflect.Descriptor instead.
+func (*ReportJobCompletedRequest) Descriptor() ([]byte, []int) {
+	return file_orionqueue_v1_job_service_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *ReportJobCompletedRequest) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+func (x *ReportJobCompletedRequest) GetWorkerId() string {
+	if x != nil {
+		return x.WorkerId
+	}
+	return ""
+}
+
+func (x *ReportJobCompletedRequest) GetExitCode() int32 {
+	if x != nil {
+		return x.ExitCode
+	}
+	return 0
+}
+
+type ReportJobCompletedResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Job           *Job                   `protobuf:"bytes,1,opt,name=job,proto3" json:"job,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReportJobCompletedResponse) Reset() {
+	*x = ReportJobCompletedResponse{}
+	mi := &file_orionqueue_v1_job_service_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReportJobCompletedResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReportJobCompletedResponse) ProtoMessage() {}
+
+func (x *ReportJobCompletedResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_orionqueue_v1_job_service_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReportJobCompletedResponse.ProtoReflect.Descriptor instead.
+func (*ReportJobCompletedResponse) Descriptor() ([]byte, []int) {
+	return file_orionqueue_v1_job_service_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *ReportJobCompletedResponse) GetJob() *Job {
+	if x != nil {
+		return x.Job
+	}
+	return nil
+}
+
+type ReportJobFailedRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	WorkerId      string                 `protobuf:"bytes,2,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	FailureReason string                 `protobuf:"bytes,3,opt,name=failure_reason,json=failureReason,proto3" json:"failure_reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReportJobFailedRequest) Reset() {
+	*x = ReportJobFailedRequest{}
+	mi := &file_orionqueue_v1_job_service_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReportJobFailedRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReportJobFailedRequest) ProtoMessage() {}
+
+func (x *ReportJobFailedRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_orionqueue_v1_job_service_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReportJobFailedRequest.ProtoReflect.Descriptor instead.
+func (*ReportJobFailedRequest) Descriptor() ([]byte, []int) {
+	return file_orionqueue_v1_job_service_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *ReportJobFailedRequest) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+func (x *ReportJobFailedRequest) GetWorkerId() string {
+	if x != nil {
+		return x.WorkerId
+	}
+	return ""
+}
+
+func (x *ReportJobFailedRequest) GetFailureReason() string {
+	if x != nil {
+		return x.FailureReason
+	}
+	return ""
+}
+
+type ReportJobFailedResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Job           *Job                   `protobuf:"bytes,1,opt,name=job,proto3" json:"job,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReportJobFailedResponse) Reset() {
+	*x = ReportJobFailedResponse{}
+	mi := &file_orionqueue_v1_job_service_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReportJobFailedResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReportJobFailedResponse) ProtoMessage() {}
+
+func (x *ReportJobFailedResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_orionqueue_v1_job_service_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReportJobFailedResponse.ProtoReflect.Descriptor instead.
+func (*ReportJobFailedResponse) Descriptor() ([]byte, []int) {
+	return file_orionqueue_v1_job_service_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *ReportJobFailedResponse) GetJob() *Job {
+	if x != nil {
+		return x.Job
+	}
+	return nil
+}
+
 var File_orionqueue_v1_job_service_proto protoreflect.FileDescriptor
 
 const file_orionqueue_v1_job_service_proto_rawDesc = "" +
@@ -611,14 +922,34 @@ const file_orionqueue_v1_job_service_proto_rawDesc = "" +
 	"\x0fRetryJobRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"8\n" +
 	"\x10RetryJobResponse\x12$\n" +
-	"\x03job\x18\x01 \x01(\v2\x12.orionqueue.v1.JobR\x03job2\xa0\x04\n" +
+	"\x03job\x18\x01 \x01(\v2\x12.orionqueue.v1.JobR\x03job\"M\n" +
+	"\x17ReportJobStartedRequest\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x1b\n" +
+	"\tworker_id\x18\x02 \x01(\tR\bworkerId\"@\n" +
+	"\x18ReportJobStartedResponse\x12$\n" +
+	"\x03job\x18\x01 \x01(\v2\x12.orionqueue.v1.JobR\x03job\"l\n" +
+	"\x19ReportJobCompletedRequest\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x1b\n" +
+	"\tworker_id\x18\x02 \x01(\tR\bworkerId\x12\x1b\n" +
+	"\texit_code\x18\x03 \x01(\x05R\bexitCode\"B\n" +
+	"\x1aReportJobCompletedResponse\x12$\n" +
+	"\x03job\x18\x01 \x01(\v2\x12.orionqueue.v1.JobR\x03job\"s\n" +
+	"\x16ReportJobFailedRequest\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x1b\n" +
+	"\tworker_id\x18\x02 \x01(\tR\bworkerId\x12%\n" +
+	"\x0efailure_reason\x18\x03 \x01(\tR\rfailureReason\"?\n" +
+	"\x17ReportJobFailedResponse\x12$\n" +
+	"\x03job\x18\x01 \x01(\v2\x12.orionqueue.v1.JobR\x03job2\xd2\x06\n" +
 	"\n" +
 	"JobService\x12g\n" +
 	"\tSubmitJob\x12\x1f.orionqueue.v1.SubmitJobRequest\x1a .orionqueue.v1.SubmitJobResponse\"\x17\x82\xd3\xe4\x93\x02\x11:\x01*\"\f/api/v1/jobs\x12`\n" +
 	"\x06GetJob\x12\x1c.orionqueue.v1.GetJobRequest\x1a\x1d.orionqueue.v1.GetJobResponse\"\x19\x82\xd3\xe4\x93\x02\x13\x12\x11/api/v1/jobs/{id}\x12a\n" +
 	"\bListJobs\x12\x1e.orionqueue.v1.ListJobsRequest\x1a\x1f.orionqueue.v1.ListJobsResponse\"\x14\x82\xd3\xe4\x93\x02\x0e\x12\f/api/v1/jobs\x12s\n" +
 	"\tCancelJob\x12\x1f.orionqueue.v1.CancelJobRequest\x1a .orionqueue.v1.CancelJobResponse\"#\x82\xd3\xe4\x93\x02\x1d:\x01*\"\x18/api/v1/jobs/{id}/cancel\x12o\n" +
-	"\bRetryJob\x12\x1e.orionqueue.v1.RetryJobRequest\x1a\x1f.orionqueue.v1.RetryJobResponse\"\"\x82\xd3\xe4\x93\x02\x1c:\x01*\"\x17/api/v1/jobs/{id}/retryBMZKgithub.com/Sharanjoo/orionqueue/internal/api/gen/orionqueue/v1;orionqueuev1b\x06proto3"
+	"\bRetryJob\x12\x1e.orionqueue.v1.RetryJobRequest\x1a\x1f.orionqueue.v1.RetryJobResponse\"\"\x82\xd3\xe4\x93\x02\x1c:\x01*\"\x17/api/v1/jobs/{id}/retry\x12c\n" +
+	"\x10ReportJobStarted\x12&.orionqueue.v1.ReportJobStartedRequest\x1a'.orionqueue.v1.ReportJobStartedResponse\x12i\n" +
+	"\x12ReportJobCompleted\x12(.orionqueue.v1.ReportJobCompletedRequest\x1a).orionqueue.v1.ReportJobCompletedResponse\x12`\n" +
+	"\x0fReportJobFailed\x12%.orionqueue.v1.ReportJobFailedRequest\x1a&.orionqueue.v1.ReportJobFailedResponseBMZKgithub.com/Sharanjoo/orionqueue/internal/api/gen/orionqueue/v1;orionqueuev1b\x06proto3"
 
 var (
 	file_orionqueue_v1_job_service_proto_rawDescOnce sync.Once
@@ -632,45 +963,60 @@ func file_orionqueue_v1_job_service_proto_rawDescGZIP() []byte {
 	return file_orionqueue_v1_job_service_proto_rawDescData
 }
 
-var file_orionqueue_v1_job_service_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_orionqueue_v1_job_service_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_orionqueue_v1_job_service_proto_goTypes = []any{
-	(*SubmitJobRequest)(nil),  // 0: orionqueue.v1.SubmitJobRequest
-	(*SubmitJobResponse)(nil), // 1: orionqueue.v1.SubmitJobResponse
-	(*GetJobRequest)(nil),     // 2: orionqueue.v1.GetJobRequest
-	(*GetJobResponse)(nil),    // 3: orionqueue.v1.GetJobResponse
-	(*ListJobsRequest)(nil),   // 4: orionqueue.v1.ListJobsRequest
-	(*ListJobsResponse)(nil),  // 5: orionqueue.v1.ListJobsResponse
-	(*CancelJobRequest)(nil),  // 6: orionqueue.v1.CancelJobRequest
-	(*CancelJobResponse)(nil), // 7: orionqueue.v1.CancelJobResponse
-	(*RetryJobRequest)(nil),   // 8: orionqueue.v1.RetryJobRequest
-	(*RetryJobResponse)(nil),  // 9: orionqueue.v1.RetryJobResponse
-	(*ResourceRequest)(nil),   // 10: orionqueue.v1.ResourceRequest
-	(*Job)(nil),               // 11: orionqueue.v1.Job
-	(JobState)(0),             // 12: orionqueue.v1.JobState
+	(*SubmitJobRequest)(nil),           // 0: orionqueue.v1.SubmitJobRequest
+	(*SubmitJobResponse)(nil),          // 1: orionqueue.v1.SubmitJobResponse
+	(*GetJobRequest)(nil),              // 2: orionqueue.v1.GetJobRequest
+	(*GetJobResponse)(nil),             // 3: orionqueue.v1.GetJobResponse
+	(*ListJobsRequest)(nil),            // 4: orionqueue.v1.ListJobsRequest
+	(*ListJobsResponse)(nil),           // 5: orionqueue.v1.ListJobsResponse
+	(*CancelJobRequest)(nil),           // 6: orionqueue.v1.CancelJobRequest
+	(*CancelJobResponse)(nil),          // 7: orionqueue.v1.CancelJobResponse
+	(*RetryJobRequest)(nil),            // 8: orionqueue.v1.RetryJobRequest
+	(*RetryJobResponse)(nil),           // 9: orionqueue.v1.RetryJobResponse
+	(*ReportJobStartedRequest)(nil),    // 10: orionqueue.v1.ReportJobStartedRequest
+	(*ReportJobStartedResponse)(nil),   // 11: orionqueue.v1.ReportJobStartedResponse
+	(*ReportJobCompletedRequest)(nil),  // 12: orionqueue.v1.ReportJobCompletedRequest
+	(*ReportJobCompletedResponse)(nil), // 13: orionqueue.v1.ReportJobCompletedResponse
+	(*ReportJobFailedRequest)(nil),     // 14: orionqueue.v1.ReportJobFailedRequest
+	(*ReportJobFailedResponse)(nil),    // 15: orionqueue.v1.ReportJobFailedResponse
+	(*ResourceRequest)(nil),            // 16: orionqueue.v1.ResourceRequest
+	(*Job)(nil),                        // 17: orionqueue.v1.Job
+	(JobState)(0),                      // 18: orionqueue.v1.JobState
 }
 var file_orionqueue_v1_job_service_proto_depIdxs = []int32{
-	10, // 0: orionqueue.v1.SubmitJobRequest.resources:type_name -> orionqueue.v1.ResourceRequest
-	11, // 1: orionqueue.v1.SubmitJobResponse.job:type_name -> orionqueue.v1.Job
-	11, // 2: orionqueue.v1.GetJobResponse.job:type_name -> orionqueue.v1.Job
-	12, // 3: orionqueue.v1.ListJobsRequest.state_filter:type_name -> orionqueue.v1.JobState
-	11, // 4: orionqueue.v1.ListJobsResponse.jobs:type_name -> orionqueue.v1.Job
-	11, // 5: orionqueue.v1.CancelJobResponse.job:type_name -> orionqueue.v1.Job
-	11, // 6: orionqueue.v1.RetryJobResponse.job:type_name -> orionqueue.v1.Job
-	0,  // 7: orionqueue.v1.JobService.SubmitJob:input_type -> orionqueue.v1.SubmitJobRequest
-	2,  // 8: orionqueue.v1.JobService.GetJob:input_type -> orionqueue.v1.GetJobRequest
-	4,  // 9: orionqueue.v1.JobService.ListJobs:input_type -> orionqueue.v1.ListJobsRequest
-	6,  // 10: orionqueue.v1.JobService.CancelJob:input_type -> orionqueue.v1.CancelJobRequest
-	8,  // 11: orionqueue.v1.JobService.RetryJob:input_type -> orionqueue.v1.RetryJobRequest
-	1,  // 12: orionqueue.v1.JobService.SubmitJob:output_type -> orionqueue.v1.SubmitJobResponse
-	3,  // 13: orionqueue.v1.JobService.GetJob:output_type -> orionqueue.v1.GetJobResponse
-	5,  // 14: orionqueue.v1.JobService.ListJobs:output_type -> orionqueue.v1.ListJobsResponse
-	7,  // 15: orionqueue.v1.JobService.CancelJob:output_type -> orionqueue.v1.CancelJobResponse
-	9,  // 16: orionqueue.v1.JobService.RetryJob:output_type -> orionqueue.v1.RetryJobResponse
-	12, // [12:17] is the sub-list for method output_type
-	7,  // [7:12] is the sub-list for method input_type
-	7,  // [7:7] is the sub-list for extension type_name
-	7,  // [7:7] is the sub-list for extension extendee
-	0,  // [0:7] is the sub-list for field type_name
+	16, // 0: orionqueue.v1.SubmitJobRequest.resources:type_name -> orionqueue.v1.ResourceRequest
+	17, // 1: orionqueue.v1.SubmitJobResponse.job:type_name -> orionqueue.v1.Job
+	17, // 2: orionqueue.v1.GetJobResponse.job:type_name -> orionqueue.v1.Job
+	18, // 3: orionqueue.v1.ListJobsRequest.state_filter:type_name -> orionqueue.v1.JobState
+	17, // 4: orionqueue.v1.ListJobsResponse.jobs:type_name -> orionqueue.v1.Job
+	17, // 5: orionqueue.v1.CancelJobResponse.job:type_name -> orionqueue.v1.Job
+	17, // 6: orionqueue.v1.RetryJobResponse.job:type_name -> orionqueue.v1.Job
+	17, // 7: orionqueue.v1.ReportJobStartedResponse.job:type_name -> orionqueue.v1.Job
+	17, // 8: orionqueue.v1.ReportJobCompletedResponse.job:type_name -> orionqueue.v1.Job
+	17, // 9: orionqueue.v1.ReportJobFailedResponse.job:type_name -> orionqueue.v1.Job
+	0,  // 10: orionqueue.v1.JobService.SubmitJob:input_type -> orionqueue.v1.SubmitJobRequest
+	2,  // 11: orionqueue.v1.JobService.GetJob:input_type -> orionqueue.v1.GetJobRequest
+	4,  // 12: orionqueue.v1.JobService.ListJobs:input_type -> orionqueue.v1.ListJobsRequest
+	6,  // 13: orionqueue.v1.JobService.CancelJob:input_type -> orionqueue.v1.CancelJobRequest
+	8,  // 14: orionqueue.v1.JobService.RetryJob:input_type -> orionqueue.v1.RetryJobRequest
+	10, // 15: orionqueue.v1.JobService.ReportJobStarted:input_type -> orionqueue.v1.ReportJobStartedRequest
+	12, // 16: orionqueue.v1.JobService.ReportJobCompleted:input_type -> orionqueue.v1.ReportJobCompletedRequest
+	14, // 17: orionqueue.v1.JobService.ReportJobFailed:input_type -> orionqueue.v1.ReportJobFailedRequest
+	1,  // 18: orionqueue.v1.JobService.SubmitJob:output_type -> orionqueue.v1.SubmitJobResponse
+	3,  // 19: orionqueue.v1.JobService.GetJob:output_type -> orionqueue.v1.GetJobResponse
+	5,  // 20: orionqueue.v1.JobService.ListJobs:output_type -> orionqueue.v1.ListJobsResponse
+	7,  // 21: orionqueue.v1.JobService.CancelJob:output_type -> orionqueue.v1.CancelJobResponse
+	9,  // 22: orionqueue.v1.JobService.RetryJob:output_type -> orionqueue.v1.RetryJobResponse
+	11, // 23: orionqueue.v1.JobService.ReportJobStarted:output_type -> orionqueue.v1.ReportJobStartedResponse
+	13, // 24: orionqueue.v1.JobService.ReportJobCompleted:output_type -> orionqueue.v1.ReportJobCompletedResponse
+	15, // 25: orionqueue.v1.JobService.ReportJobFailed:output_type -> orionqueue.v1.ReportJobFailedResponse
+	18, // [18:26] is the sub-list for method output_type
+	10, // [10:18] is the sub-list for method input_type
+	10, // [10:10] is the sub-list for extension type_name
+	10, // [10:10] is the sub-list for extension extendee
+	0,  // [0:10] is the sub-list for field type_name
 }
 
 func init() { file_orionqueue_v1_job_service_proto_init() }
@@ -685,7 +1031,7 @@ func file_orionqueue_v1_job_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orionqueue_v1_job_service_proto_rawDesc), len(file_orionqueue_v1_job_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   10,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

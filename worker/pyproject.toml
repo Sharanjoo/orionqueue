@@ -42,7 +42,7 @@ build-backend = "setuptools.build_meta"
 # `pip install .` — the latter is what deploy/docker/worker.Dockerfile
 # does, where a source-tree-relative sys.path trick would silently break.
 where = [".", "gen"]
-include = ["agent*", "gpu*", "orionqueue*"]
+include = ["agent*", "gpu*", "executors*", "orionqueue*"]
 
 [tool.ruff]
 line-length = 100

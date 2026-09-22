@@ -383,3 +383,308 @@ func TestServiceListActiveOrdersByPriorityThenCreatedAt(t *testing.T) {
 		}
 	}
 }
+
+func TestServiceListAssignedToWorkerReturnsOnlyScheduledJobsForThatWorker(t *testing.T) {
+	svc, _ := newTestService()
+	ctx := context.Background()
+
+	forA, err := svc.Submit(ctx, validSubmitInput())
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if _, err := svc.AssignToWorkers(ctx, forA.ID, []string{"worker-a"}); err != nil {
+		t.Fatalf("AssignToWorkers returned error: %v", err)
+	}
+
+	forB, err := svc.Submit(ctx, validSubmitInput())
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if _, err := svc.AssignToWorkers(ctx, forB.ID, []string{"worker-b"}); err != nil {
+		t.Fatalf("AssignToWorkers returned error: %v", err)
+	}
+
+	stillQueued, err := svc.Submit(ctx, validSubmitInput())
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	_ = stillQueued
+
+	assigned, err := svc.ListAssignedToWorker(ctx, "worker-a")
+	if err != nil {
+		t.Fatalf("ListAssignedToWorker returned error: %v", err)
+	}
+	if len(assigned) != 1 || assigned[0].ID != forA.ID {
+		t.Fatalf("expected only forA assigned to worker-a, got %+v", assigned)
+	}
+}
+
+func TestServiceListAssignedToWorkerExcludesAlreadyStartedJobs(t *testing.T) {
+	svc, _ := newTestService()
+	ctx := context.Background()
+
+	job, err := svc.Submit(ctx, validSubmitInput())
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if _, err := svc.AssignToWorkers(ctx, job.ID, []string{"worker-a"}); err != nil {
+		t.Fatalf("AssignToWorkers returned error: %v", err)
+	}
+	if _, err := svc.Start(ctx, job.ID); err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	assigned, err := svc.ListAssignedToWorker(ctx, "worker-a")
+	if err != nil {
+		t.Fatalf("ListAssignedToWorker returned error: %v", err)
+	}
+	if len(assigned) != 0 {
+		t.Fatalf("expected an already-started job to not appear again, got %+v", assigned)
+	}
+}
+
+func TestServiceStartTransitionsScheduledToRunning(t *testing.T) {
+	svc, _ := newTestService()
+	ctx := context.Background()
+
+	job, err := svc.Submit(ctx, validSubmitInput())
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if _, err := svc.AssignToWorkers(ctx, job.ID, []string{"worker-a"}); err != nil {
+		t.Fatalf("AssignToWorkers returned error: %v", err)
+	}
+
+	started, err := svc.Start(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	if started.State != StateRunning {
+		t.Errorf("State = %q, want %q", started.State, StateRunning)
+	}
+	if started.StartedAt == nil {
+		t.Error("expected StartedAt to be set")
+	}
+}
+
+func TestServiceStartRejectsNonScheduledJob(t *testing.T) {
+	svc, _ := newTestService()
+	job, err := svc.Submit(context.Background(), validSubmitInput())
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if _, err := svc.Start(context.Background(), job.ID); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("expected ErrInvalidState for a QUEUED (not SCHEDULED) job, got %v", err)
+	}
+}
+
+func TestServiceCompleteTransitionsRunningToSucceeded(t *testing.T) {
+	svc, _ := newTestService()
+	ctx := context.Background()
+	job, err := svc.Submit(ctx, validSubmitInput())
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if _, err := svc.AssignToWorkers(ctx, job.ID, []string{"worker-a"}); err != nil {
+		t.Fatalf("AssignToWorkers returned error: %v", err)
+	}
+	if _, err := svc.Start(ctx, job.ID); err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	completed, err := svc.Complete(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("Complete returned error: %v", err)
+	}
+	if completed.State != StateSucceeded {
+		t.Errorf("State = %q, want %q", completed.State, StateSucceeded)
+	}
+	if completed.CompletedAt == nil {
+		t.Error("expected CompletedAt to be set")
+	}
+}
+
+func TestServiceCompleteRejectsNonRunningJob(t *testing.T) {
+	svc, _ := newTestService()
+	job, err := svc.Submit(context.Background(), validSubmitInput())
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if _, err := svc.Complete(context.Background(), job.ID); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("expected ErrInvalidState for a QUEUED (not RUNNING) job, got %v", err)
+	}
+}
+
+func TestServiceFailRequeuesWhenRetriesRemain(t *testing.T) {
+	svc, _ := newTestService()
+	ctx := context.Background()
+	in := validSubmitInput()
+	in.RetryLimit = 3
+	job, err := svc.Submit(ctx, in)
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if _, err := svc.AssignToWorkers(ctx, job.ID, []string{"worker-a"}); err != nil {
+		t.Fatalf("AssignToWorkers returned error: %v", err)
+	}
+	if _, err := svc.Start(ctx, job.ID); err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	failed, err := svc.Fail(ctx, job.ID, "simulated failure")
+	if err != nil {
+		t.Fatalf("Fail returned error: %v", err)
+	}
+	if failed.State != StateQueued {
+		t.Errorf("State = %q, want %q (retries remain)", failed.State, StateQueued)
+	}
+	if failed.CurrentAttempt != 2 {
+		t.Errorf("CurrentAttempt = %d, want 2", failed.CurrentAttempt)
+	}
+	if failed.FailureReason != "simulated failure" {
+		t.Errorf("FailureReason = %q, want %q", failed.FailureReason, "simulated failure")
+	}
+	if len(failed.AssignedWorkerIDs) != 0 {
+		t.Errorf("expected AssignedWorkerIDs cleared on requeue, got %v", failed.AssignedWorkerIDs)
+	}
+	if failed.StartedAt != nil {
+		t.Error("expected StartedAt cleared on requeue")
+	}
+}
+
+func TestServiceFailReachesTerminalStateWhenRetriesExhausted(t *testing.T) {
+	svc, _ := newTestService()
+	ctx := context.Background()
+	in := validSubmitInput()
+	in.RetryLimit = 1
+	job, err := svc.Submit(ctx, in) // CurrentAttempt starts at 1 == RetryLimit
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if _, err := svc.AssignToWorkers(ctx, job.ID, []string{"worker-a"}); err != nil {
+		t.Fatalf("AssignToWorkers returned error: %v", err)
+	}
+	if _, err := svc.Start(ctx, job.ID); err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	failed, err := svc.Fail(ctx, job.ID, "out of retries")
+	if err != nil {
+		t.Fatalf("Fail returned error: %v", err)
+	}
+	if failed.State != StateFailed {
+		t.Errorf("State = %q, want %q (retry limit exhausted)", failed.State, StateFailed)
+	}
+	if failed.FailedAt == nil {
+		t.Error("expected FailedAt to be set")
+	}
+}
+
+func TestServiceFailRejectsNonRunningJob(t *testing.T) {
+	svc, _ := newTestService()
+	job, err := svc.Submit(context.Background(), validSubmitInput())
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if _, err := svc.Fail(context.Background(), job.ID, "x"); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("expected ErrInvalidState for a QUEUED (not RUNNING) job, got %v", err)
+	}
+}
+
+func TestServiceLoseWorkerRequeuesRunningAndScheduledJobs(t *testing.T) {
+	svc, _ := newTestService()
+	ctx := context.Background()
+
+	running, err := svc.Submit(ctx, validSubmitInput())
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if _, err := svc.AssignToWorkers(ctx, running.ID, []string{"worker-lost"}); err != nil {
+		t.Fatalf("AssignToWorkers returned error: %v", err)
+	}
+	if _, err := svc.Start(ctx, running.ID); err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	scheduled, err := svc.Submit(ctx, validSubmitInput())
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if _, err := svc.AssignToWorkers(ctx, scheduled.ID, []string{"worker-lost"}); err != nil {
+		t.Fatalf("AssignToWorkers returned error: %v", err)
+	}
+
+	unrelated, err := svc.Submit(ctx, validSubmitInput())
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if _, err := svc.AssignToWorkers(ctx, unrelated.ID, []string{"worker-other"}); err != nil {
+		t.Fatalf("AssignToWorkers returned error: %v", err)
+	}
+
+	recovered, err := svc.LoseWorker(ctx, "worker-lost")
+	if err != nil {
+		t.Fatalf("LoseWorker returned error: %v", err)
+	}
+	if recovered != 2 {
+		t.Fatalf("recovered = %d, want 2", recovered)
+	}
+
+	for _, id := range []string{running.ID, scheduled.ID} {
+		got, err := svc.Get(ctx, id)
+		if err != nil {
+			t.Fatalf("Get(%s) returned error: %v", id, err)
+		}
+		if got.State != StateQueued {
+			t.Errorf("job %s: State = %q, want %q", id, got.State, StateQueued)
+		}
+	}
+
+	gotUnrelated, err := svc.Get(ctx, unrelated.ID)
+	if err != nil {
+		t.Fatalf("Get returned error: %v", err)
+	}
+	if gotUnrelated.State != StateScheduled {
+		t.Errorf("unrelated job's State = %q, want unchanged %q", gotUnrelated.State, StateScheduled)
+	}
+}
+
+func TestServiceLoseWorkerMarksFailedWhenRetriesExhausted(t *testing.T) {
+	svc, _ := newTestService()
+	ctx := context.Background()
+	in := validSubmitInput()
+	in.RetryLimit = 1
+	job, err := svc.Submit(ctx, in)
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if _, err := svc.AssignToWorkers(ctx, job.ID, []string{"worker-lost"}); err != nil {
+		t.Fatalf("AssignToWorkers returned error: %v", err)
+	}
+	if _, err := svc.Start(ctx, job.ID); err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	if _, err := svc.LoseWorker(ctx, "worker-lost"); err != nil {
+		t.Fatalf("LoseWorker returned error: %v", err)
+	}
+
+	got, err := svc.Get(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("Get returned error: %v", err)
+	}
+	if got.State != StateFailed {
+		t.Errorf("State = %q, want %q", got.State, StateFailed)
+	}
+}
+
+func TestServiceLoseWorkerReturnsZeroWhenNoJobsAssigned(t *testing.T) {
+	svc, _ := newTestService()
+	recovered, err := svc.LoseWorker(context.Background(), "worker-nonexistent")
+	if err != nil {
+		t.Fatalf("LoseWorker returned error: %v", err)
+	}
+	if recovered != 0 {
+		t.Errorf("recovered = %d, want 0", recovered)
+	}
+}

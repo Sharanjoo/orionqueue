@@ -93,3 +93,49 @@ class RetryJobResponse(_message.Message):
     JOB_FIELD_NUMBER: _ClassVar[int]
     job: _job_pb2.Job
     def __init__(self, job: _Optional[_Union[_job_pb2.Job, _Mapping]] = ...) -> None: ...
+
+class ReportJobStartedRequest(_message.Message):
+    __slots__ = ("job_id", "worker_id")
+    JOB_ID_FIELD_NUMBER: _ClassVar[int]
+    WORKER_ID_FIELD_NUMBER: _ClassVar[int]
+    job_id: str
+    worker_id: str
+    def __init__(self, job_id: _Optional[str] = ..., worker_id: _Optional[str] = ...) -> None: ...
+
+class ReportJobStartedResponse(_message.Message):
+    __slots__ = ("job",)
+    JOB_FIELD_NUMBER: _ClassVar[int]
+    job: _job_pb2.Job
+    def __init__(self, job: _Optional[_Union[_job_pb2.Job, _Mapping]] = ...) -> None: ...
+
+class ReportJobCompletedRequest(_message.Message):
+    __slots__ = ("job_id", "worker_id", "exit_code")
+    JOB_ID_FIELD_NUMBER: _ClassVar[int]
+    WORKER_ID_FIELD_NUMBER: _ClassVar[int]
+    EXIT_CODE_FIELD_NUMBER: _ClassVar[int]
+    job_id: str
+    worker_id: str
+    exit_code: int
+    def __init__(self, job_id: _Optional[str] = ..., worker_id: _Optional[str] = ..., exit_code: _Optional[int] = ...) -> None: ...
+
+class ReportJobCompletedResponse(_message.Message):
+    __slots__ = ("job",)
+    JOB_FIELD_NUMBER: _ClassVar[int]
+    job: _job_pb2.Job
+    def __init__(self, job: _Optional[_Union[_job_pb2.Job, _Mapping]] = ...) -> None: ...
+
+class ReportJobFailedRequest(_message.Message):
+    __slots__ = ("job_id", "worker_id", "failure_reason")
+    JOB_ID_FIELD_NUMBER: _ClassVar[int]
+    WORKER_ID_FIELD_NUMBER: _ClassVar[int]
+    FAILURE_REASON_FIELD_NUMBER: _ClassVar[int]
+    job_id: str
+    worker_id: str
+    failure_reason: str
+    def __init__(self, job_id: _Optional[str] = ..., worker_id: _Optional[str] = ..., failure_reason: _Optional[str] = ...) -> None: ...
+
+class ReportJobFailedResponse(_message.Message):
+    __slots__ = ("job",)
+    JOB_FIELD_NUMBER: _ClassVar[int]
+    job: _job_pb2.Job
+    def __init__(self, job: _Optional[_Union[_job_pb2.Job, _Mapping]] = ...) -> None: ...

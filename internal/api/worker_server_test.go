@@ -8,16 +8,18 @@ import (
 	"google.golang.org/grpc/codes"
 
 	pb "github.com/Sharanjoo/orionqueue/internal/api/gen/orionqueue/v1"
+	"github.com/Sharanjoo/orionqueue/internal/jobs"
 	"github.com/Sharanjoo/orionqueue/internal/leases"
 	"github.com/Sharanjoo/orionqueue/internal/workers"
 )
 
-func newTestWorkerServer() (*WorkerServer, *leases.FakeManager) {
+func newTestWorkerServer() (*WorkerServer, *leases.FakeManager, *jobs.Service) {
 	repo := workers.NewMemoryRepository()
 	fakeLeases := leases.NewFakeManager()
-	svc := workers.NewService(repo, fakeLeases)
+	workerSvc := workers.NewService(repo, fakeLeases)
+	jobSvc := jobs.NewService(jobs.NewMemoryRepository())
 	logger := slog.New(slog.NewJSONHandler(discardWriter{}, nil))
-	return NewWorkerServer(svc, logger), fakeLeases
+	return NewWorkerServer(workerSvc, jobSvc, logger), fakeLeases, jobSvc
 }
 
 func validRegisterWorkerRequest() *pb.RegisterWorkerRequest {
@@ -34,7 +36,7 @@ func validRegisterWorkerRequest() *pb.RegisterWorkerRequest {
 }
 
 func TestRegisterWorkerAndHeartbeat(t *testing.T) {
-	s, _ := newTestWorkerServer()
+	s, _, _ := newTestWorkerServer()
 	ctx := context.Background()
 
 	regResp, err := s.RegisterWorker(ctx, validRegisterWorkerRequest())
@@ -70,25 +72,25 @@ func TestRegisterWorkerAndHeartbeat(t *testing.T) {
 }
 
 func TestRegisterWorkerRejectsInvalidRequest(t *testing.T) {
-	s, _ := newTestWorkerServer()
+	s, _, _ := newTestWorkerServer()
 	_, err := s.RegisterWorker(context.Background(), &pb.RegisterWorkerRequest{})
 	assertStatusCode(t, err, codes.InvalidArgument)
 }
 
 func TestWorkerHeartbeatEmptyIDReturnsInvalidArgument(t *testing.T) {
-	s, _ := newTestWorkerServer()
+	s, _, _ := newTestWorkerServer()
 	_, err := s.WorkerHeartbeat(context.Background(), &pb.WorkerHeartbeatRequest{})
 	assertStatusCode(t, err, codes.InvalidArgument)
 }
 
 func TestWorkerHeartbeatMissingWorkerReturnsNotFound(t *testing.T) {
-	s, _ := newTestWorkerServer()
+	s, _, _ := newTestWorkerServer()
 	_, err := s.WorkerHeartbeat(context.Background(), &pb.WorkerHeartbeatRequest{WorkerId: "does-not-exist"})
 	assertStatusCode(t, err, codes.NotFound)
 }
 
 func TestListWorkersFiltersByStatus(t *testing.T) {
-	s, fakeLeases := newTestWorkerServer()
+	s, fakeLeases, _ := newTestWorkerServer()
 	ctx := context.Background()
 
 	regResp, err := s.RegisterWorker(ctx, validRegisterWorkerRequest())
@@ -126,5 +128,45 @@ func TestListWorkersFiltersByStatus(t *testing.T) {
 	}
 	if len(active.GetWorkers()) != 1 || active.GetWorkers()[0].GetHostname() != "worker-2.local" {
 		t.Fatalf("expected only worker-2.local (ACTIVE), got %+v", active.GetWorkers())
+	}
+}
+
+func TestWorkerHeartbeatReturnsAssignedJobsNotYetStarted(t *testing.T) {
+	s, _, jobSvc := newTestWorkerServer()
+	ctx := context.Background()
+
+	regResp, err := s.RegisterWorker(ctx, validRegisterWorkerRequest())
+	if err != nil {
+		t.Fatalf("RegisterWorker returned error: %v", err)
+	}
+	workerID := regResp.GetWorker().GetId()
+
+	job, err := jobSvc.Submit(ctx, jobs.SubmitInput{Name: "j1", Owner: "o", Image: "img"})
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	if _, err := jobSvc.AssignToWorkers(ctx, job.ID, []string{workerID}); err != nil {
+		t.Fatalf("AssignToWorkers returned error: %v", err)
+	}
+
+	hbResp, err := s.WorkerHeartbeat(ctx, &pb.WorkerHeartbeatRequest{WorkerId: workerID})
+	if err != nil {
+		t.Fatalf("WorkerHeartbeat returned error: %v", err)
+	}
+	if len(hbResp.GetAssignedJobs()) != 1 || hbResp.GetAssignedJobs()[0].GetId() != job.ID {
+		t.Fatalf("expected assigned_jobs = [%s], got %+v", job.ID, hbResp.GetAssignedJobs())
+	}
+
+	// Once the worker reports it started the job, later heartbeats must
+	// not offer it again.
+	if _, err := jobSvc.Start(ctx, job.ID); err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	hbResp2, err := s.WorkerHeartbeat(ctx, &pb.WorkerHeartbeatRequest{WorkerId: workerID})
+	if err != nil {
+		t.Fatalf("second WorkerHeartbeat returned error: %v", err)
+	}
+	if len(hbResp2.GetAssignedJobs()) != 0 {
+		t.Errorf("expected no assigned_jobs after the job was started, got %+v", hbResp2.GetAssignedJobs())
 	}
 }

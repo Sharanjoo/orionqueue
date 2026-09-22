@@ -206,6 +206,103 @@ func TestRetryJobMissingReturnsNotFound(t *testing.T) {
 	assertStatusCode(t, err, codes.NotFound)
 }
 
+func TestReportJobLifecycleRunsFullPath(t *testing.T) {
+	s := newTestServer()
+	ctx := context.Background()
+
+	submitResp, err := s.SubmitJob(ctx, validSubmitRequest())
+	if err != nil {
+		t.Fatalf("SubmitJob returned error: %v", err)
+	}
+	jobID := submitResp.GetJob().GetId()
+
+	if _, err := s.svc.AssignToWorkers(ctx, jobID, []string{"worker-1"}); err != nil {
+		t.Fatalf("test setup AssignToWorkers returned error: %v", err)
+	}
+
+	startResp, err := s.ReportJobStarted(ctx, &pb.ReportJobStartedRequest{JobId: jobID, WorkerId: "worker-1"})
+	if err != nil {
+		t.Fatalf("ReportJobStarted returned error: %v", err)
+	}
+	if startResp.GetJob().GetState() != pb.JobState_JOB_STATE_RUNNING {
+		t.Errorf("State = %v, want JOB_STATE_RUNNING", startResp.GetJob().GetState())
+	}
+
+	completeResp, err := s.ReportJobCompleted(ctx, &pb.ReportJobCompletedRequest{JobId: jobID, WorkerId: "worker-1", ExitCode: 0})
+	if err != nil {
+		t.Fatalf("ReportJobCompleted returned error: %v", err)
+	}
+	if completeResp.GetJob().GetState() != pb.JobState_JOB_STATE_SUCCEEDED {
+		t.Errorf("State = %v, want JOB_STATE_SUCCEEDED", completeResp.GetJob().GetState())
+	}
+}
+
+func TestReportJobFailedRequeuesWhenRetriesRemain(t *testing.T) {
+	s := newTestServer()
+	ctx := context.Background()
+
+	req := validSubmitRequest()
+	req.RetryLimit = 3
+	submitResp, err := s.SubmitJob(ctx, req)
+	if err != nil {
+		t.Fatalf("SubmitJob returned error: %v", err)
+	}
+	jobID := submitResp.GetJob().GetId()
+
+	if _, err := s.svc.AssignToWorkers(ctx, jobID, []string{"worker-1"}); err != nil {
+		t.Fatalf("test setup AssignToWorkers returned error: %v", err)
+	}
+	if _, err := s.ReportJobStarted(ctx, &pb.ReportJobStartedRequest{JobId: jobID, WorkerId: "worker-1"}); err != nil {
+		t.Fatalf("ReportJobStarted returned error: %v", err)
+	}
+
+	failResp, err := s.ReportJobFailed(ctx, &pb.ReportJobFailedRequest{JobId: jobID, WorkerId: "worker-1", FailureReason: "simulated"})
+	if err != nil {
+		t.Fatalf("ReportJobFailed returned error: %v", err)
+	}
+	if failResp.GetJob().GetState() != pb.JobState_JOB_STATE_QUEUED {
+		t.Errorf("State = %v, want JOB_STATE_QUEUED (retries remain)", failResp.GetJob().GetState())
+	}
+	if failResp.GetJob().GetFailureReason() != "simulated" {
+		t.Errorf("FailureReason = %q, want %q", failResp.GetJob().GetFailureReason(), "simulated")
+	}
+}
+
+func TestReportJobStartedRejectsNonScheduledJob(t *testing.T) {
+	s := newTestServer()
+	ctx := context.Background()
+	submitResp, err := s.SubmitJob(ctx, validSubmitRequest())
+	if err != nil {
+		t.Fatalf("SubmitJob returned error: %v", err)
+	}
+	_, err = s.ReportJobStarted(ctx, &pb.ReportJobStartedRequest{JobId: submitResp.GetJob().GetId(), WorkerId: "worker-1"})
+	assertStatusCode(t, err, codes.FailedPrecondition)
+}
+
+func TestReportJobStartedEmptyIDReturnsInvalidArgument(t *testing.T) {
+	s := newTestServer()
+	_, err := s.ReportJobStarted(context.Background(), &pb.ReportJobStartedRequest{})
+	assertStatusCode(t, err, codes.InvalidArgument)
+}
+
+func TestReportJobCompletedEmptyIDReturnsInvalidArgument(t *testing.T) {
+	s := newTestServer()
+	_, err := s.ReportJobCompleted(context.Background(), &pb.ReportJobCompletedRequest{})
+	assertStatusCode(t, err, codes.InvalidArgument)
+}
+
+func TestReportJobFailedEmptyIDReturnsInvalidArgument(t *testing.T) {
+	s := newTestServer()
+	_, err := s.ReportJobFailed(context.Background(), &pb.ReportJobFailedRequest{})
+	assertStatusCode(t, err, codes.InvalidArgument)
+}
+
+func TestReportJobCompletedMissingJobReturnsNotFound(t *testing.T) {
+	s := newTestServer()
+	_, err := s.ReportJobCompleted(context.Background(), &pb.ReportJobCompletedRequest{JobId: "does-not-exist"})
+	assertStatusCode(t, err, codes.NotFound)
+}
+
 func assertStatusCode(t *testing.T, err error, want codes.Code) {
 	t.Helper()
 	if err == nil {

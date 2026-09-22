@@ -9,22 +9,28 @@ import (
 	"google.golang.org/grpc/status"
 
 	pb "github.com/Sharanjoo/orionqueue/internal/api/gen/orionqueue/v1"
+	"github.com/Sharanjoo/orionqueue/internal/jobs"
 	"github.com/Sharanjoo/orionqueue/internal/workers"
 )
 
 // WorkerServer implements pb.WorkerServiceServer on top of a
 // workers.Service, the same adapter pattern JobServer established for
-// jobs.Service in Phase 2.
+// jobs.Service in Phase 2. It also holds a jobs.Service, added in Phase 6
+// solely to compose WorkerHeartbeat's response with the jobs a worker
+// should pick up and start (see WorkerHeartbeat) — this is the one place
+// internal/workers and internal/jobs are bridged; neither package imports
+// the other directly.
 type WorkerServer struct {
 	pb.UnimplementedWorkerServiceServer
 
 	svc    *workers.Service
+	jobs   *jobs.Service
 	logger *slog.Logger
 }
 
-// NewWorkerServer returns a WorkerServer backed by svc.
-func NewWorkerServer(svc *workers.Service, logger *slog.Logger) *WorkerServer {
-	return &WorkerServer{svc: svc, logger: logger}
+// NewWorkerServer returns a WorkerServer backed by svc and jobSvc.
+func NewWorkerServer(svc *workers.Service, jobSvc *jobs.Service, logger *slog.Logger) *WorkerServer {
+	return &WorkerServer{svc: svc, jobs: jobSvc, logger: logger}
 }
 
 func (s *WorkerServer) RegisterWorker(ctx context.Context, req *pb.RegisterWorkerRequest) (*pb.RegisterWorkerResponse, error) {
@@ -56,7 +62,24 @@ func (s *WorkerServer) WorkerHeartbeat(ctx context.Context, req *pb.WorkerHeartb
 	if err != nil {
 		return nil, s.toStatus(err)
 	}
-	return &pb.WorkerHeartbeatResponse{Worker: workerToProto(worker)}, nil
+
+	resp := &pb.WorkerHeartbeatResponse{Worker: workerToProto(worker)}
+	assigned, err := s.jobs.ListAssignedToWorker(ctx, req.GetWorkerId())
+	if err != nil {
+		// The heartbeat itself (the part that keeps this worker's lease
+		// alive) already succeeded and is recorded above — a failure
+		// listing assigned jobs shouldn't make the whole heartbeat fail
+		// and risk the lease expiring. Log it and return what we have;
+		// the worker simply picks up any pending assignment on its next
+		// heartbeat instead.
+		s.logger.Error("failed to list jobs assigned to worker for heartbeat response",
+			slog.String("worker_id", req.GetWorkerId()), slog.String("error", err.Error()))
+		return resp, nil
+	}
+	for _, j := range assigned {
+		resp.AssignedJobs = append(resp.AssignedJobs, jobToProto(j))
+	}
+	return resp, nil
 }
 
 func (s *WorkerServer) ListWorkers(ctx context.Context, req *pb.ListWorkersRequest) (*pb.ListWorkersResponse, error) {

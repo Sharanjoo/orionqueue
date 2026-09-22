@@ -3,6 +3,7 @@ syntax = "proto3";
 package orionqueue.v1;
 
 import "google/api/annotations.proto";
+import "orionqueue/v1/job.proto";
 import "orionqueue/v1/worker.proto";
 
 option go_package = "github.com/Sharanjoo/orionqueue/internal/api/gen/orionqueue/v1;orionqueuev1";
@@ -34,6 +35,13 @@ message WorkerHeartbeatRequest {
 
 message WorkerHeartbeatResponse {
   Worker worker = 1;
+  // assigned_jobs lists jobs currently SCHEDULED to this worker that it
+  // hasn't yet reported starting (via JobService.ReportJobStarted) — the
+  // worker agent picks these up and begins executing them. Piggybacking
+  // this on the heartbeat response (rather than a separate poll/push
+  // mechanism) reuses a channel the worker is already calling on a
+  // steady interval — see docs/architecture/system-overview.md.
+  repeated Job assigned_jobs = 2;
 }
 
 message ListWorkersRequest {

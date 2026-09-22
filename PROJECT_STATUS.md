@@ -1,18 +1,25 @@
 # OrionQueue — Project Status
 
-Last updated: 2026-09-22 (Phase 5)
+Last updated: 2026-09-22 (Phase 6)
 
 ## Current phase
 
-**Phase 5 — Scheduler.** Complete.
+**Phase 6 — Job execution.** Complete.
 
-A real scheduling loop now assigns QUEUED jobs to eligible ACTIVE workers:
-priority ordering with fairness (aging), GPU/CPU/memory eligibility,
-gang scheduling for multi-GPU jobs, bin-packing placement, etcd-backed
-leader election so only one scheduler replica is ever active, and
-scheduling-decision persistence. Verified live against the real running
-stack (see Measured results) and against real etcd for the leader
-election and lease-expiry mechanics specifically.
+A SCHEDULED job now actually runs. The control plane delivers job
+assignments to workers piggybacked on the existing heartbeat response
+(`WorkerHeartbeatResponse.assigned_jobs`); each worker executes assigned
+jobs on its own daemon thread via a deterministic fake-GPU executor
+(`worker/executors/fake.py`) so a long job never blocks the heartbeat
+loop; the worker reports `ReportJobStarted`/`ReportJobCompleted`/
+`ReportJobFailed` back to the control plane around execution; failures
+retry (`FAILED` → requeued `QUEUED` with `current_attempt` incremented)
+until `retry_limit` is exhausted, then reach terminal `FAILED`; and a
+worker that disappears mid-job (lease expiry, connecting Phase 4's
+detection to this phase's job lifecycle via `Service.LoseWorker`)
+requeues or fails its in-flight jobs exactly like an explicit failure
+would. Verified live against the real running stack for all three paths
+(success, retry-then-fail, worker loss) — see Measured results.
 
 ## Phase tracker
 
@@ -24,7 +31,7 @@ election and lease-expiry mechanics specifically.
 | 3 | Persistence (PostgreSQL) | Done |
 | 4 | Worker registration & heartbeats | Done |
 | 5 | Scheduler | Done |
-| 6 | Job execution | Not started |
+| 6 | Job execution | Done |
 | 7 | Cancellation and preemption | Not started |
 | 8 | Checkpointing and recovery | Not started |
 | 9 | Real GPU and NCCL execution | Not started |
@@ -37,133 +44,158 @@ election and lease-expiry mechanics specifically.
 ## Implemented vs. simulated vs. not yet validated
 
 - **Implemented:**
-  - `migrations/0004_create_scheduling_decisions`: audit table for
-    successful placements, distinct from the generic `job_events` log.
-  - `internal/scheduler`: `Plan` — a pure, exhaustively unit-tested
-    function turning a snapshot of active jobs/workers into placements
-    (no I/O); `EffectivePriority` — aging-based fairness so a long-waiting
-    low-priority job can't be starved forever; `Service.RunOnce` — the
-    fetch/plan/apply orchestration wrapping `Plan` with real repositories.
-  - `internal/leases.RunElection`: etcd-backed leader-election loop
-    (campaign, hold leadership, detect session loss, re-campaign, resign
-    on shutdown) — a new capability in the etcd abstraction introduced in
-    Phase 4.
-  - `internal/jobs.Service.AssignToWorkers`: the QUEUED→SCHEDULED
-    transition, guarded by the same row-locked `Update` pattern Phase 3
-    built — this is what makes concurrent scheduler replicas safe even
-    during a brief leader-election handoff, not leader election alone.
-  - `cmd/scheduler`: fully rewritten — connects to Postgres and etcd,
-    campaigns for leadership, runs a scheduling pass every
-    `ORIONQUEUE_SCHEDULING_INTERVAL_SECONDS` (default 5s) while leading,
-    exposes `/leader` (is this replica currently leading?) alongside the
-    existing `/healthz`/`/readyz`.
-  - `docker-compose.yml`: `scheduler` now depends on `postgres`/`migrate`/
-    `etcd` like `api` does.
-- **Simulated:** GPU inventory (unchanged from Phase 4) — utilization stays
-  0 since nothing executes yet. Scheduling decisions themselves are real,
-  not simulated: the algorithm, the database writes, and the leader
-  election all run for real against real workers/jobs, just workers that
-  currently only ever report simulated GPUs.
-- **Not yet validated:** nothing new — real GPU/NCCL (Phase 9), full
-  observability (Phase 10), and cloud deployment (Phase 13) remain
-  unvalidated as before.
-- **Explicit Phase 5 scope boundaries (not gaps):**
-  - Gang scheduling places every GPU a job needs on a **single** worker,
-    never spread across workers — this project doesn't model cross-worker
-    network topology, so spreading a gang job wouldn't be meaningful.
-  - A job requesting more resources than any current worker can supply
-    stays `QUEUED` indefinitely rather than being force-failed — "can
-    never fit" is genuinely undecidable in a cluster where a larger
-    worker could register later (see ADR-0002's "alternatives
-    considered"). This is a deliberate deviation from the brief's literal
-    "reject jobs that can never fit" language, chosen because the
-    alternative (guessing wrong and failing a job that would have fit a
-    worker that joined five minutes later) is worse.
-  - Worker label/capability constraints (brief's requirement #6) are not
-    implemented — `SubmitJobRequest` has no corresponding "required
-    labels" field yet; adding one is a proto/API change, not just a
-    scheduler change, deferred rather than bolted on.
-  - GPU commitment is tracked as an aggregate count per worker, not
-    against specific device indices, until Phase 6 introduces real
-    execution with heartbeat-reported per-device utilization — documented
-    in `internal/scheduler/capacity.go`.
-  - `AssignedWorkerIDs` being set does not mean a job is running —
-    nothing delivers the assignment to the worker or executes it until
-    Phase 6.
+  - `proto/orionqueue/v1/worker_service.proto`: `WorkerHeartbeatResponse`
+    gains `assigned_jobs` — job delivery is piggybacked on the existing
+    heartbeat cycle rather than a new push/poll RPC, so a worker never has
+    to guess when to ask.
+  - `proto/orionqueue/v1/job_service.proto`: `ReportJobStarted`,
+    `ReportJobCompleted`, `ReportJobFailed` RPCs (gRPC-only, worker→control
+    plane, no REST binding — these aren't client-facing).
+  - `internal/jobs.Service`: `ListAssignedToWorker` (feeds the heartbeat
+    response), `Start`/`Complete`/`Fail` (the SCHEDULED→RUNNING→
+    SUCCEEDED/FAILED transitions), `LoseWorker` (bulk-recovers every
+    active job assigned to a worker whose lease just expired) — all
+    guarded by the same row-locked `Update` pattern used since Phase 3.
+    `Fail`'s retry logic (`applyFailureOrRetry`) is shared by both the
+    explicit-failure and worker-loss paths, so they behave identically by
+    construction rather than by two independently-maintained copies.
+  - `internal/api`: `JobServer.ReportJobStarted/Completed/Failed`;
+    `WorkerServer.WorkerHeartbeat` now also lists and attaches the
+    worker's newly-SCHEDULED jobs to the response.
+  - `cmd/api`: the Phase 4 `WatchExpirations` "worker marked LOST" callback
+    now also calls `jobSvc.LoseWorker`, connecting lease-expiry detection
+    to job recovery for the first time.
+  - `worker/executors/fake.py`: the deterministic fake-GPU job executor —
+    steps through a configurable number of steps (`--steps`), each a
+    configurable sleep (`--step-seconds`), with an optional configurable
+    failure point (`--fail-at-step`) for reproducible failure-injection
+    demos. Configuration is read from the job's existing `command` field
+    (no new proto fields) since fake-GPU mode has no real image/command to
+    execute — documented as a deliberate reuse, not a misuse.
+  - `worker/agent/grpc_client.py`: `report_started`/`report_completed`/
+    `report_failed`; `heartbeat()` now parses and returns `assigned_jobs`
+    as plain `AssignedJob` objects, decoupled from the raw protobuf type.
+  - `worker/agent/main.py`: each newly assigned job is executed on its own
+    daemon thread (`_start_job`), reporting Started before execution and
+    Completed/Failed after, tracked in a lock-guarded `running_jobs` dict
+    so (a) a job already running is never started a second time even if
+    it reappears in `assigned_jobs`, and (b) `running_job_ids` sent on
+    later heartbeats reflects reality. Running execution on a background
+    thread — rather than inline in the heartbeat loop — is what stops a
+    long (even simulated) job from starving heartbeats and getting the
+    worker wrongly declared LOST mid-job.
+- **Simulated:** job *execution* is fake-GPU only (`executors/fake.py`) —
+  no real container/process/GPU compute happens; only the timing, retry,
+  and failure-injection behavior is real. GPU inventory/utilization
+  reporting is unchanged from Phase 4 (still simulated, still doesn't move
+  during execution — that requires Phase 9's real executor or a fake one
+  that fakes utilization, neither of which exists yet).
+- **Not yet validated:** real GPU/NCCL (Phase 9), full observability
+  (Phase 10), and cloud deployment (Phase 13) remain unvalidated, as
+  before.
+- **Explicit Phase 6 scope boundaries (not gaps):**
+  - No graceful cancellation or draining: a SIGTERM/SIGINT to the worker
+    process does not attempt to stop or report in-flight jobs — they're
+    daemon threads and die with the process, then get recovered through
+    the same lease-expiry + `LoseWorker` path as a hard crash. Graceful
+    cancellation (`CancelJob` reaching a RUNNING job) is Phase 7 — `Cancel`
+    still rejects RUNNING jobs today, unchanged from Phase 3.
+  - `ReportJobStarted`/`Completed`/`Failed` trust the caller's
+    `worker_id` — there's no check that the reporting worker is actually
+    the one the job was assigned to. Low risk today (nothing but the
+    worker agent itself calls these RPCs, and they're gRPC-only, not
+    REST-exposed), but a real multi-tenant deployment would need it;
+    tracked as a gap, not fixed here to stay in scope.
+  - Progress reporting (a `Progress` RPC, or per-step progress in the Job
+    record) does not exist — `executors.fake.run()`'s `on_step` hook is
+    wired to structured logs only. Deferred to Phase 10 once there's a
+    metrics/observability pipeline for progress to feed.
 
 ## Known issues
 
-- A real test-timing bug was found and fixed in this phase's own test
-  suite (not production code): a concurrency test asserted a specific
-  *mechanism* (`Result.Conflicted == 1`) for how two racing scheduler
-  instances avoid double-booking a job, but Go's goroutine scheduling can
-  legitimately resolve the race a second, equally-correct way (one
-  instance's fresh read already reflects the other's completed work, so
-  it sees nothing to do). Fixed by asserting the actual invariant that
-  matters (`Result.Assigned == 1`, always) instead of one specific path
-  to it; reran 5x to confirm the fix removed the flakiness.
-- Carried over, unchanged: port workarounds (8080, 5432); no local
-  `golangci-lint`/`gcc`; Windows SIGTERM caveat; `internal/persistence`
-  at 0% coverage under the default (non-Docker) test run by design.
+- Carried over from Phase 5: port workarounds (8080, 5432→5433); no local
+  `golangci-lint`/`gcc`; Windows SIGTERM caveat (now doubly relevant, since
+  it's also how a worker's in-flight jobs get abandoned rather than
+  drained — see the scope boundary above); `internal/persistence` at 0%
+  coverage under the default (non-Docker) test run by design.
+- No new production-code bugs found this phase. One pre-existing lint
+  finding (`typing.Callable` instead of `collections.abc.Callable` in
+  `executors/fake.py`, flagged by ruff's `UP035`) was fixed while running
+  the full lint suite for this phase's report.
 
 ## Measured results
 
 All of the following are actual outputs from this session:
 
-- `go test ./... -cover` (no Docker): all packages pass. 149 Go unit test
-  functions total (up from 115 after Phase 4). New this phase:
-  `internal/scheduler` 94.6% coverage (20 tests for `Plan` alone, covering
-  every eligibility dimension, gang-scheduling atomicity, bin-packing
-  preference, aging/fairness, and capacity conservation within a single
-  pass, plus a real concurrent-goroutines test for scheduler-replica
-  safety).
-- `go test ./tests/integration/... -tags=integration`: **28/28 tests
-  passing** (~200s), up from 21 after Phase 4 — new: `ListActive` for both
-  jobs and workers against real Postgres, `scheduling_decisions`
-  persistence (including a foreign-key-violation test), and 3 leader
-  election tests against a **real etcd container**: a single candidate
-  becoming leader, two concurrent candidates never leading
-  simultaneously, and automatic failover to a waiting candidate when the
-  leader steps down.
-- `ruff`, `black --check`, `gofmt -l`, `go vet`, `buf lint`: all clean.
-- **Full live-stack verification**, not just automated tests:
-  - `docker compose up`: scheduler acquired leadership immediately
-    (`{"is_leader":true}` from `/leader`); log showed
-    `"election status changed" status=campaigning` →
-    `status=leader` → `"became scheduler leader"`.
-  - Submitted a job needing 1 GPU/2 cores with a worker registered
-    (2 simulated GPUs, 8 cores): within one scheduling pass (~2s, faster
-    than the 5s interval since it landed on the next tick) the job moved
-    `JOB_STATE_QUEUED` → `JOB_STATE_SCHEDULED` with
-    `assigned_worker_ids` set to the real worker's ID; scheduler log
-    showed `"scheduling pass complete" considered=1 assigned=1 conflicted=0`;
-    `SELECT * FROM scheduling_decisions` showed one matching row with
-    `decision='ASSIGNED'` and the correct `job_id`/`worker_ids`/`reason`.
-  - Submitted a second job needing 8 GPUs (worker only has 2): confirmed
-    it stayed `JOB_STATE_QUEUED` after a full scheduling pass — no crash,
-    no incorrect failure, exactly the documented "stays queued, doesn't
-    block others" behavior.
+- `go build ./...`, `go vet ./...`: clean.
+- `go test ./... -cover` (no Docker): all packages pass, **169 Go unit
+  test functions total** (up from 149 after Phase 5). New this phase:
+  `internal/jobs` 92.8% coverage (14 new tests: `ListAssignedToWorker`,
+  `Start`/`Complete`/`Fail` transitions and their rejection paths,
+  `LoseWorker` requeue/terminal-fail/no-op cases); `internal/api` 88.9%
+  coverage (8 new tests covering the 3 new RPCs' full lifecycle path,
+  empty-ID validation, and not-found/wrong-state error mapping, plus the
+  heartbeat's `assigned_jobs` behavior).
+- `gofmt -l .`, `buf lint`: clean.
+- `worker`: **64 pytest tests passing** (up from 41 before this phase —
+  13 for the new fake executor, plus new/expanded coverage for
+  `grpc_client.py`'s lifecycle-reporting methods and `main.py`'s threaded
+  job-execution loop, including tests against a real in-process gRPC
+  server rather than a mocked stub). `ruff check .` and `black --check .`:
+  clean (one pre-existing `ruff` finding, `UP035` in `executors/fake.py`,
+  fixed as part of this pass).
+- **Full live-stack verification via `docker compose up --build`**, not
+  just automated tests — all three job-lifecycle paths exercised against
+  the real running stack with real `curl` polling and real worker/API
+  container logs, not simulated or asserted from code reading alone:
+  - **Success path:** submitted a 3-step job (`--steps=3 --step-seconds=1`).
+    Observed `JOB_STATE_QUEUED` → `JOB_STATE_SCHEDULED` →
+    `JOB_STATE_RUNNING` → `JOB_STATE_SUCCEEDED` by polling
+    `GET /api/v1/jobs/{id}`; worker log showed `"job started"` then
+    `"job completed" steps_completed=3` exactly 3 seconds apart.
+  - **Retry-then-terminal-fail path:** submitted a job with
+    `--fail-at-step=2` and `retry_limit=2`. First attempt (`current_attempt=1`)
+    failed and was requeued to `JOB_STATE_QUEUED` with
+    `current_attempt=2` and `failure_reason="simulated failure at step 2
+    of 3 (--fail-at-step)"` preserved; second attempt ran and reached
+    terminal `JOB_STATE_FAILED`. A control job with `retry_limit=1`
+    (`current_attempt` starts at 1, so `1 < 1` is false) went straight to
+    terminal `FAILED` on its one and only attempt, confirming
+    `retry_limit` means "total attempts allowed", not "retries after the
+    first".
+  - **Worker-loss mid-execution recovery:** submitted a 30-step job, then
+    ran `docker kill orionqueue-worker-1` (SIGKILL, no graceful shutdown,
+    no restart policy — confirmed by its absence from `docker compose ps`
+    afterward and no `"stopped"` log line) while the job was
+    SCHEDULED/about to run. The job stayed `JOB_STATE_RUNNING` in the
+    database (last known state) until the worker's 20s etcd lease
+    expired; api-1's log recorded
+    `"worker marked LOST (lease expired without a renewing heartbeat)"`
+    followed immediately by `"recovered jobs from lost worker"
+    recovered=1`, and the job flipped to `JOB_STATE_QUEUED` with
+    `current_attempt=2`, `assigned_worker_ids` cleared. Restarting the
+    worker (`docker compose up -d worker`) picked the requeued job back
+    up on its next scheduling pass and ran it to `JOB_STATE_SUCCEEDED`.
   - Stack torn down cleanly (`docker compose down`) afterward.
 
 ## Assumptions and environment notes
 
-- Carried over from Phase 0–4 (Windows 11 dev machine, no local GPU,
+- Carried over from Phase 0–5 (Windows 11 dev machine, no local GPU,
   missing `make`/`protoc`/`gcc`/`golangci-lint`, port workarounds for
   8080/5432) — see `docs/adr/0000-local-tooling-adaptations.md`.
-- No new external dependencies this phase — `go.etcd.io/etcd/client/v3`'s
-  `concurrency` subpackage (used for leader election) was already pulled
-  in by the `client/v3` module added in Phase 4.
+- No new external dependencies this phase, Go or Python.
 - Per explicit user instruction, Claude does not run `git commit` or
   `git push` in this repo — every phase's report includes the exact
-  commands for the user to run instead. Phases 0–4 are already committed
+  commands for the user to run instead. Phases 0–5 are already committed
   and pushed by the user.
 
 ## Next phase
 
-**Phase 6 — Job execution**: worker-side assignment handling (the worker
-agent needs to learn it's been assigned a job — polling or a push
-mechanism), a fake-GPU job executor that actually runs a deterministic
-simulated workload, job lifecycle reporting (ReportJobStarted/Progress/
-Completed/Failed RPCs), timeouts, and retry-on-failure — the first phase
-where `RetryJob` (implemented since Phase 2, never reachable until now)
-and a job's `RUNNING` state become real.
+**Phase 7 — Cancellation and preemption**: `CancelJob` needs to actually
+reach a RUNNING job (today it still rejects that state, unchanged since
+Phase 3) — meaning the control plane needs a way to signal a specific
+worker/job for graceful stop, and the worker's job-execution thread needs
+a cooperative stop mechanism (`executors.fake.run()`'s `should_stop` hook
+already exists for exactly this and is unused until now). Priority-based
+preemption of a lower-priority RUNNING job to make room for a
+higher-priority one builds on the same mechanism, per ADR-0005.

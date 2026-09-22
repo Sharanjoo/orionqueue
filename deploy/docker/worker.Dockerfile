@@ -6,6 +6,7 @@ WORKDIR /src
 COPY worker/pyproject.toml worker/README.md ./
 COPY worker/agent ./agent
 COPY worker/gpu ./gpu
+COPY worker/executors ./executors
 COPY worker/gen ./gen
 RUN pip install --no-cache-dir --prefix=/install .
 

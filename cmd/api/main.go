@@ -87,7 +87,7 @@ func run() int {
 
 	leaseManager := leases.NewEtcdManager(etcdClient)
 	workerSvc := workers.NewService(persistence.NewWorkerRepository(dbPool), leaseManager)
-	workerServer := orionapi.NewWorkerServer(workerSvc, logger)
+	workerServer := orionapi.NewWorkerServer(workerSvc, jobSvc, logger)
 
 	grpcServer := grpc.NewServer()
 	pb.RegisterJobServiceServer(grpcServer, jobServer)
@@ -131,7 +131,7 @@ func run() int {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	return serve(logger, grpcServer, grpcLis, httpSrv, workerSvc)
+	return serve(logger, grpcServer, grpcLis, httpSrv, workerSvc, jobSvc)
 }
 
 // serve starts the gRPC and HTTP servers together, runs the worker
@@ -142,7 +142,7 @@ func run() int {
 // fake servers if that turns out to be worth the complexity; documented
 // as untested today alongside the rest of cmd/api's process-lifecycle
 // wiring (see PROJECT_STATUS.md's coverage notes).
-func serve(logger *slog.Logger, grpcServer *grpc.Server, grpcLis net.Listener, httpSrv *http.Server, workerSvc *workers.Service) int {
+func serve(logger *slog.Logger, grpcServer *grpc.Server, grpcLis net.Listener, httpSrv *http.Server, workerSvc *workers.Service, jobSvc *jobs.Service) int {
 	ctx, stop := health.ShutdownContext()
 	defer stop()
 
@@ -150,6 +150,21 @@ func serve(logger *slog.Logger, grpcServer *grpc.Server, grpcLis net.Listener, h
 		func(workerID string) {
 			logger.Info("worker marked LOST (lease expired without a renewing heartbeat)",
 				slog.String("worker_id", workerID))
+			// Recover any job that was SCHEDULED/RUNNING on this worker
+			// (requeue if retries remain, else FAIL) — this is what
+			// connects Phase 4's automatic worker-loss detection to job
+			// execution, so a crashed worker's in-flight jobs don't sit
+			// stuck forever.
+			recovered, err := jobSvc.LoseWorker(context.Background(), workerID)
+			if err != nil {
+				logger.Error("failed to recover jobs from lost worker",
+					slog.String("worker_id", workerID), slog.String("error", err.Error()))
+				return
+			}
+			if recovered > 0 {
+				logger.Info("recovered jobs from lost worker",
+					slog.String("worker_id", workerID), slog.Int("recovered", recovered))
+			}
 		},
 		func(workerID string, err error) {
 			logger.Error("failed to mark worker lost after lease expiration",

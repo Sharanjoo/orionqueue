@@ -15,6 +15,16 @@ var ErrInvalidState = errors.New("job is not in a valid state for this operation
 // its configured retry budget.
 var ErrRetryLimitExceeded = errors.New("retry limit exceeded")
 
+// containsString reports whether s contains v.
+func containsString(s []string, v string) bool {
+	for _, x := range s {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
 // Clock abstracts time.Now so tests can control timestamps deterministically.
 type Clock func() time.Time
 
@@ -100,14 +110,14 @@ func (s *Service) List(ctx context.Context, opts ListOptions) (ListResult, error
 // Cancel requests cancellation of the job with the given ID.
 //
 // A QUEUED, RETRYING, or SCHEDULED job — nothing is actually executing it
-// yet, even once Phase 5's scheduler has assigned it to a worker, since
-// worker-side execution doesn't exist until Phase 6 — transitions
-// directly to CANCELLED. A job already in a terminal state (SUCCEEDED,
-// FAILED, CANCELLED) is a no-op that returns the job unchanged — this is
-// what makes Cancel idempotent, and what lets a client safely retry a
-// cancel request. Cancelling a RUNNING job (which requires a
-// graceful-termination signal to a worker) is implemented in Phase 7,
-// once a job can actually be RUNNING.
+// yet, even once Phase 5's scheduler has assigned it to a worker —
+// transitions directly to CANCELLED. A job already in a terminal state
+// (SUCCEEDED, FAILED, CANCELLED) is a no-op that returns the job
+// unchanged — this is what makes Cancel idempotent, and what lets a
+// client safely retry a cancel request. Cancelling a RUNNING job (which
+// requires sending a graceful-termination signal to the worker actually
+// executing it, then waiting on it) is implemented in Phase 7 — today it
+// returns ErrInvalidState, same as any other unsupported transition.
 func (s *Service) Cancel(ctx context.Context, id string) (Job, error) {
 	return s.repo.Update(ctx, id, func(job Job) (Job, error) {
 		switch {
@@ -153,6 +163,141 @@ func (s *Service) AssignToWorkers(ctx context.Context, id string, workerIDs []st
 // (Priority DESC, CreatedAt ASC) — see Repository.ListActive.
 func (s *Service) ListActive(ctx context.Context) ([]Job, error) {
 	return s.repo.ListActive(ctx)
+}
+
+// ListAssignedToWorker returns every SCHEDULED job currently assigned to
+// workerID — the set a worker agent should pick up and start executing.
+// Once a job is actually started (Start), it moves to RUNNING and stops
+// appearing here, so a worker heartbeating repeatedly never tries to
+// start the same job twice. Implemented by scanning ListActive rather
+// than a dedicated indexed query — an accepted simplification at this
+// portfolio project's scale (see internal/scheduler's capacity-tracking
+// comments for the same trade-off made there).
+func (s *Service) ListAssignedToWorker(ctx context.Context, workerID string) ([]Job, error) {
+	active, err := s.repo.ListActive(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var assigned []Job
+	for _, job := range active {
+		if job.State == StateScheduled && containsString(job.AssignedWorkerIDs, workerID) {
+			assigned = append(assigned, job)
+		}
+	}
+	return assigned, nil
+}
+
+// Start transitions a SCHEDULED job to RUNNING, called when a worker
+// reports (ReportJobStarted) that it has begun executing job.
+func (s *Service) Start(ctx context.Context, id string) (Job, error) {
+	return s.repo.Update(ctx, id, func(job Job) (Job, error) {
+		if job.State != StateScheduled {
+			return Job{}, fmt.Errorf("%w: Start requires state SCHEDULED, job is %s", ErrInvalidState, job.State)
+		}
+		job.State = StateRunning
+		now := s.now().UTC()
+		job.StartedAt = &now
+		return job, nil
+	})
+}
+
+// Complete transitions a RUNNING job to SUCCEEDED, called when a worker
+// reports (ReportJobCompleted) that execution finished successfully.
+func (s *Service) Complete(ctx context.Context, id string) (Job, error) {
+	return s.repo.Update(ctx, id, func(job Job) (Job, error) {
+		if job.State != StateRunning {
+			return Job{}, fmt.Errorf("%w: Complete requires state RUNNING, job is %s", ErrInvalidState, job.State)
+		}
+		job.State = StateSucceeded
+		now := s.now().UTC()
+		job.CompletedAt = &now
+		return job, nil
+	})
+}
+
+// Fail transitions a RUNNING job following an execution failure reported
+// by a worker (ReportJobFailed). If the job hasn't exhausted its
+// RetryLimit yet, it goes straight back to QUEUED with CurrentAttempt
+// incremented — this is what makes "failed jobs retry correctly" and
+// "retry limits are enforced" (Phase 6's acceptance criteria) hold
+// automatically, without a client needing to call RetryJob after every
+// transient failure. RetryJob (Phase 2) remains available separately, for
+// a client to manually retry a job that already exhausted these
+// automatic attempts and is sitting FAILED.
+//
+// Note: this never materializes RETRYING as a stored intermediate state
+// (it goes directly RUNNING -> QUEUED in one update) — consistent with
+// Retry's own FAILED -> QUEUED transition, which has never stored
+// RETRYING either. RETRYING remains defined in the domain model for a
+// possible future refinement (e.g. a time-bound backoff delay before
+// requeue), not because either code path uses it today.
+func (s *Service) Fail(ctx context.Context, id string, reason string) (Job, error) {
+	return s.repo.Update(ctx, id, func(job Job) (Job, error) {
+		if job.State != StateRunning {
+			return Job{}, fmt.Errorf("%w: Fail requires state RUNNING, job is %s", ErrInvalidState, job.State)
+		}
+		return applyFailureOrRetry(job, reason, s.now().UTC()), nil
+	})
+}
+
+// LoseWorker finds every job assigned to workerID that's still SCHEDULED
+// or RUNNING and recovers it — requeued for another attempt, or marked
+// FAILED if retries are exhausted, the same decision Fail makes for a
+// worker-reported failure. Called when internal/workers detects (via its
+// own etcd-lease-expiry watcher) that workerID has been marked LOST, so a
+// crashed worker's in-flight jobs don't sit SCHEDULED/RUNNING forever —
+// this is what connects Phase 4's automatic worker-loss detection to job
+// execution. Returns how many jobs it recovered, for logging.
+func (s *Service) LoseWorker(ctx context.Context, workerID string) (int, error) {
+	active, err := s.repo.ListActive(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("jobs: list active jobs for lost-worker recovery: %w", err)
+	}
+
+	reason := fmt.Sprintf("worker %s was lost", workerID)
+	recovered := 0
+	for _, job := range active {
+		if job.State != StateScheduled && job.State != StateRunning {
+			continue
+		}
+		if !containsString(job.AssignedWorkerIDs, workerID) {
+			continue
+		}
+
+		_, err := s.repo.Update(ctx, job.ID, func(j Job) (Job, error) {
+			// Re-check inside the lock: another caller may have already
+			// moved this job on (e.g. it completed a split second before
+			// the loss was detected).
+			if j.State != StateScheduled && j.State != StateRunning {
+				return j, nil
+			}
+			return applyFailureOrRetry(j, reason, s.now().UTC()), nil
+		})
+		if err != nil {
+			return recovered, fmt.Errorf("jobs: recover job %s from lost worker %s: %w", job.ID, workerID, err)
+		}
+		recovered++
+	}
+	return recovered, nil
+}
+
+// applyFailureOrRetry mutates job to reflect a failure: requeues it
+// (QUEUED, CurrentAttempt incremented, unassigned) if retries remain, or
+// marks it FAILED (terminal) if not. Shared by Fail (a worker-reported
+// execution failure) and LoseWorker (recovery when a job's worker
+// disappears) so the retry-or-fail decision is made in exactly one place.
+func applyFailureOrRetry(job Job, reason string, now time.Time) Job {
+	job.FailureReason = reason
+	if job.CurrentAttempt < job.RetryLimit {
+		job.State = StateQueued
+		job.CurrentAttempt++
+		job.StartedAt = nil
+		job.AssignedWorkerIDs = nil
+		return job
+	}
+	job.State = StateFailed
+	job.FailedAt = &now
+	return job
 }
 
 // Retry moves a FAILED job back to QUEUED for another attempt, as long as

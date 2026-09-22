@@ -1,0 +1,57 @@
+# Go
+/bin/
+*.exe
+*.test
+*.out
+vendor/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / frontend
+node_modules/
+frontend/dist/
+frontend/build/
+.vite/
+.eslintcache
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log
+
+# Build / data / logs
+dist/
+build/
+*.log
+data/
+tmp/
+coverage/
+coverage.out
+*.cover
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -2,11 +2,12 @@
 // gateway that external clients (the dashboard, CLI, or curl) submit jobs
 // and read cluster state through.
 //
-// Phase 2 scope: job submission, lookup, listing, cancellation, and retry,
-// backed by an in-memory job store. Job state does not survive a restart
-// yet — PostgreSQL-backed persistence is Phase 3. Worker-facing RPCs
-// (RegisterWorker, WorkerHeartbeat, AssignJob, ...) are added in Phase 4/5
-// once there's a scheduler/worker to call them.
+// Phase 3 scope: job submission, lookup, listing, cancellation, and retry,
+// backed by PostgreSQL — job state survives a restart. Migrations must
+// already be applied (scripts/migrate.sh, or the `migrate` service in
+// docker-compose.yml); this binary does not run them itself. Worker-facing
+// RPCs (RegisterWorker, WorkerHeartbeat, AssignJob, ...) are added in
+// Phase 4/5 once there's a scheduler/worker to call them.
 package main
 
 import (
@@ -28,6 +29,7 @@ import (
 	"github.com/Sharanjoo/orionqueue/internal/health"
 	"github.com/Sharanjoo/orionqueue/internal/jobs"
 	"github.com/Sharanjoo/orionqueue/internal/logging"
+	"github.com/Sharanjoo/orionqueue/internal/persistence"
 )
 
 func main() {
@@ -46,10 +48,24 @@ func run() int {
 	logger := logging.NewStdout(cfg.ServiceName, cfg.Environment, cfg.LogLevel)
 	logger.Info("starting", slog.String("http_addr", cfg.HTTPAddr), slog.String("grpc_addr", cfg.GRPCAddr))
 
-	// Phase 2 uses an in-memory repository: job state resets on restart.
-	// Phase 3 swaps this for a PostgreSQL-backed jobs.Repository without
-	// any other change in this file.
-	repo := jobs.NewMemoryRepository()
+	// Connect with a bounded retry (see persistence.Connect) rather than
+	// failing on the first attempt — Postgres inside Docker Compose can
+	// still be starting even after api's container itself is running.
+	// This is the one dependency this service has; if it's unreachable
+	// after all retries, there's nothing useful this process can do, so
+	// it exits rather than serving requests against a repository that
+	// can't work (jobs.MemoryRepository, Phase 2's fallback, is no longer
+	// wired in here — a service silently reverting to "state doesn't
+	// survive a restart" on DB trouble would be a worse failure mode than
+	// just not starting).
+	dbPool, err := persistence.Connect(context.Background(), cfg.DatabaseURL)
+	if err != nil {
+		logger.Error("failed to connect to database", slog.String("error", err.Error()))
+		return 1
+	}
+	defer dbPool.Close()
+
+	repo := persistence.NewJobRepository(dbPool)
 	svc := jobs.NewService(repo)
 	jobServer := orionapi.NewJobServer(svc, logger)
 
@@ -75,9 +91,9 @@ func run() int {
 	}
 
 	mux := http.NewServeMux()
-	// Phase 2 has no external dependencies to check; readiness is always
-	// true. Phase 3/4 will wire real PostgreSQL/etcd checks in here.
-	health.RegisterRoutes(mux, health.Checks{})
+	health.RegisterRoutes(mux, health.Checks{
+		Ready: func(ctx context.Context) error { return dbPool.Ping(ctx) },
+	})
 	mux.Handle("/", gwMux)
 
 	httpSrv := &http.Server{

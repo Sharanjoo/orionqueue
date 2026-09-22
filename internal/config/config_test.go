@@ -61,6 +61,51 @@ func TestLoadRejectsMalformedGRPCAddr(t *testing.T) {
 	}
 }
 
+func TestDefaultDatabaseURLIsSetForAPIOnly(t *testing.T) {
+	api := Defaults("orionqueue-api")
+	if api.DatabaseURL == "" {
+		t.Error("expected orionqueue-api to have a non-empty default DatabaseURL")
+	}
+	scheduler := Defaults("orionqueue-scheduler")
+	if scheduler.DatabaseURL != "" {
+		t.Errorf("expected orionqueue-scheduler to have an empty default DatabaseURL, got %q", scheduler.DatabaseURL)
+	}
+}
+
+func TestLoadAppliesDatabaseURLOverride(t *testing.T) {
+	t.Setenv("ORIONQUEUE_DATABASE_URL", "postgres://u:p@example.invalid:5432/db")
+	cfg, err := Load("orionqueue-api")
+	if err != nil {
+		t.Fatalf("Load returned unexpected error: %v", err)
+	}
+	if cfg.DatabaseURL != "postgres://u:p@example.invalid:5432/db" {
+		t.Errorf("DatabaseURL = %q, want the overridden value", cfg.DatabaseURL)
+	}
+}
+
+func TestLoadRejectsEmptyDatabaseURLForAPI(t *testing.T) {
+	// Force DatabaseURL empty in a way env-override can't: Validate must
+	// reject it directly since orionqueue-api always needs one.
+	cfg := Config{ServiceName: "orionqueue-api", Environment: "local", HTTPAddr: ":7080", LogLevel: "info", DatabaseURL: ""}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected Validate to reject an empty DatabaseURL for orionqueue-api")
+	}
+}
+
+func TestLoadRejectsNonPostgresDatabaseURL(t *testing.T) {
+	t.Setenv("ORIONQUEUE_DATABASE_URL", "mysql://u:p@localhost/db")
+	if _, err := Load("orionqueue-api"); err == nil {
+		t.Fatal("expected Load to reject a non-postgres ORIONQUEUE_DATABASE_URL")
+	}
+}
+
+func TestValidateDoesNotRequireDatabaseURLForNonAPIServices(t *testing.T) {
+	cfg := Config{ServiceName: "orionqueue-scheduler", Environment: "local", HTTPAddr: ":7081", LogLevel: "info"}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("expected orionqueue-scheduler to validate without a DatabaseURL, got: %v", err)
+	}
+}
+
 func TestLoadIgnoresEmptyEnvValues(t *testing.T) {
 	t.Setenv("ORIONQUEUE_ENVIRONMENT", "")
 

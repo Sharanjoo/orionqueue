@@ -1,9 +1,40 @@
-# Phase 1 scope: build and run the four OrionQueue services standalone, to
-# prove each one containerizes and starts correctly. PostgreSQL, etcd,
-# Prometheus, Grafana, MinIO, and multiple fake workers are added in
-# Phase 12 (see docs/adr/0006-kubernetes-deployment-strategy.md for the
-# same fake-worker-first philosophy applied to Kubernetes).
+# Phase 3 adds PostgreSQL (durable job state) and a one-shot migration
+# step. etcd, Prometheus, Grafana, MinIO, and multiple fake workers are
+# added in Phase 12 (see docs/adr/0006-kubernetes-deployment-strategy.md
+# for the same fake-worker-first philosophy applied to Kubernetes).
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: orionqueue
+      POSTGRES_PASSWORD: orionqueue
+      POSTGRES_DB: orionqueue
+    ports:
+      - "5433:5432" # host 5433 (5432 was already taken by an unrelated local Postgres on this dev machine); exposed for local debugging (psql, a GUI client), not required by other services which talk to "postgres:5432" over the compose network
+    volumes:
+      - orionqueue-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orionqueue -d orionqueue"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  migrate:
+    image: migrate/migrate:v4.18.1
+    volumes:
+      - ./migrations:/migrations:ro
+    command:
+      [
+        "-path",
+        "/migrations",
+        "-database",
+        "postgres://orionqueue:orionqueue@postgres:5432/orionqueue?sslmode=disable",
+        "up",
+      ]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   api:
     build:
       context: .
@@ -11,9 +42,15 @@ services:
     image: orionqueue/api:local
     environment:
       ORIONQUEUE_ENVIRONMENT: compose
+      ORIONQUEUE_DATABASE_URL: postgres://orionqueue:orionqueue@postgres:5432/orionqueue?sslmode=disable
     ports:
       - "7080:7080" # REST gateway + /healthz, /readyz
       - "9080:9080" # gRPC (server reflection on, so grpcurl works with no local .proto files)
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:7080/healthz"]
       interval: 10s
@@ -51,3 +88,6 @@ services:
     image: orionqueue/frontend:local
     ports:
       - "8088:80"
+
+volumes:
+  orionqueue-postgres-data:

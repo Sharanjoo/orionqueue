@@ -60,6 +60,18 @@ jobs:
       - name: go test
         run: go test ./... -race -cover
 
+  go-integration:
+    name: Go integration tests (real PostgreSQL via testcontainers)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+          cache: true
+      - name: go test (integration)
+        run: go test ./tests/integration/... -tags=integration -v
+
   worker:
     name: Python worker (ruff, black, pytest)
     runs-on: ubuntu-latest

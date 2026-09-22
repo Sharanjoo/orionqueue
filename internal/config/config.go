@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 // Config holds settings shared by OrionQueue's Go services. Phase 1 only
@@ -28,6 +29,11 @@ type Config struct {
 	// Empty for services that don't run a gRPC server (only cmd/api does,
 	// as of Phase 2).
 	GRPCAddr string
+	// DatabaseURL is a PostgreSQL connection string. Only cmd/api uses it
+	// (as of Phase 3); it must point at a database with migrations
+	// already applied (see scripts/migrate.sh) — nothing in this package
+	// or in internal/persistence runs migrations automatically.
+	DatabaseURL string
 	// LogLevel controls the minimum level emitted by the service's
 	// structured logger ("debug", "info", "warn", or "error").
 	LogLevel string
@@ -42,7 +48,23 @@ func Defaults(serviceName string) Config {
 		Environment: "local",
 		HTTPAddr:    defaultHTTPAddr(serviceName),
 		GRPCAddr:    defaultGRPCAddr(serviceName),
+		DatabaseURL: defaultDatabaseURL(serviceName),
 		LogLevel:    "info",
+	}
+}
+
+// defaultDatabaseURL matches docker-compose.yml's postgres service
+// credentials, so `docker compose up` needs no extra configuration.
+// Outside Compose (e.g. `go run ./cmd/api` against a manually started
+// Postgres container), override with ORIONQUEUE_DATABASE_URL if your
+// setup differs. Empty for services that don't use PostgreSQL yet
+// (cmd/scheduler, until Phase 5).
+func defaultDatabaseURL(serviceName string) string {
+	switch serviceName {
+	case "orionqueue-api":
+		return "postgres://orionqueue:orionqueue@localhost:5432/orionqueue?sslmode=disable"
+	default:
+		return ""
 	}
 }
 
@@ -92,6 +114,9 @@ func Load(serviceName string) (Config, error) {
 	if v, ok := os.LookupEnv("ORIONQUEUE_GRPC_ADDR"); ok && v != "" {
 		cfg.GRPCAddr = v
 	}
+	if v, ok := os.LookupEnv("ORIONQUEUE_DATABASE_URL"); ok && v != "" {
+		cfg.DatabaseURL = v
+	}
 	if v, ok := os.LookupEnv("ORIONQUEUE_LOG_LEVEL"); ok && v != "" {
 		cfg.LogLevel = v
 	}
@@ -118,6 +143,14 @@ func (c Config) Validate() error {
 	if c.GRPCAddr != "" {
 		if _, err := portOf(c.GRPCAddr); err != nil {
 			return fmt.Errorf("invalid ORIONQUEUE_GRPC_ADDR %q: %w", c.GRPCAddr, err)
+		}
+	}
+	if c.ServiceName == "orionqueue-api" {
+		if c.DatabaseURL == "" {
+			return fmt.Errorf("ORIONQUEUE_DATABASE_URL must not be empty for orionqueue-api")
+		}
+		if !strings.HasPrefix(c.DatabaseURL, "postgres://") && !strings.HasPrefix(c.DatabaseURL, "postgresql://") {
+			return fmt.Errorf("invalid ORIONQUEUE_DATABASE_URL: must start with postgres:// or postgresql://")
 		}
 	}
 	return nil
